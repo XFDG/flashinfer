@@ -1921,6 +1921,7 @@ def trtllm_batch_decode_sparse_mla_dsv4(
             sinks=sinks,
             max_q_len=q_len_per_request,
             cum_seq_lens_q=cum_seq_lens_q,
+            seq_lens=seq_lens,
             backend="cake",
         )
 

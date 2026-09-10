@@ -44,13 +44,13 @@ static_assert(alignof(CUtensorMap) == 128, "CUtensorMap CUDA ABI must be 128-byt
 #define SMEM_SMEM_SUM_OFF 197632
 #define SMEM_SMEM_SUM_STAGE_BYTES 256
 #define SMEM_SMEM_SUM_STRIDE 256
-#define SMEM_SMEM_INDEX_FLAGS_OFF 198400
+#define SMEM_SMEM_INDEX_FLAGS_OFF 197632
 #define SMEM_SMEM_INDEX_FLAGS_STAGE_BYTES 16
 #define SMEM_SMEM_INDEX_FLAGS_STRIDE 16
 #define SMEM_SMEM_INDICES_OFF 197888
 #define SMEM_SMEM_INDICES_STAGE_BYTES 512
 #define SMEM_SMEM_INDICES_STRIDE 512
-#define SMEM_TOTAL 198528
+#define SMEM_TOTAL 198400
 #define THREADS 512
 
 #include <math_constants.h>
@@ -962,7 +962,7 @@ __device__ __forceinline__ uint32_t make_warp_uniform(uint32_t val) {
 extern "C" {
 
 __global__ __launch_bounds__(512, 1) void
-kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorMap const* tmap_swa_kv, __nv_bfloat16* __restrict__ O, int* __restrict__ sparse_indices, int* __restrict__ sparse_topk_lens, float* __restrict__ sinks, float* __restrict__ bmm1_scale, float* __restrict__ bmm2_scale, int num_heads, int has_sinks)
+kernel_cake_dsv4_bf16_h16_h32_swa128_v41(CakeTensorMap const* tmap_q, CakeTensorMap const* tmap_swa_kv, __nv_bfloat16* __restrict__ O, int* __restrict__ sparse_indices, int* __restrict__ sparse_topk_lens, float* __restrict__ sinks, float* __restrict__ bmm1_scale, float* __restrict__ bmm2_scale, int num_heads, int has_sinks)
 {
     const int tid = threadIdx.x;
     const uint32_t warp = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
@@ -1001,8 +1001,8 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
     const int smem_v_addr = smem + 66560;
     float* smem_sum = reinterpret_cast<float*>(smem_raw + 197632);
     const int smem_sum_addr = smem + 197632;
-    int* smem_index_flags = reinterpret_cast<int*>(smem_raw + 198400);
-    const int smem_index_flags_addr = smem + 198400;
+    int* smem_index_flags = reinterpret_cast<int*>(smem_raw + 197632);
+    const int smem_index_flags_addr = smem + 197632;
     int* smem_indices = reinterpret_cast<int*>(smem_raw + 197888);
     const int smem_indices_addr = smem + 197888;
 
@@ -1027,14 +1027,14 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
             mbarrier_init(smem + 64, 1);
             // s_full: 1 barriers, init_count=1
             mbarrier_init(smem + 72, 1);
-            // p_full: 1 barriers, init_count=128
-            mbarrier_init(smem + 80, 128);
-            // sum_ready: 1 barriers, init_count=128
-            mbarrier_init(smem + 88, 128);
+            // p_full: 1 barriers, init_count=64
+            mbarrier_init(smem + 80, 64);
+            // sum_ready: 1 barriers, init_count=64
+            mbarrier_init(smem + 88, 64);
             // o_done: 1 barriers, init_count=1
             mbarrier_init(smem + 96, 1);
-            // tmem_dealloc: 1 barriers, init_count=256
-            mbarrier_init(smem + 104, 256);
+            // tmem_dealloc: 1 barriers, init_count=128
+            mbarrier_init(smem + 104, 128);
             asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
         }
     }
@@ -1059,13 +1059,20 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
 
     // ---- Ordered hardware-WG register redistribution ----
     // Dec phase frees registers before any WG attempts inc.
-    if (warp >= 8 && warp <= 11) {
+    if (warp >= 4 && warp <= 7) {
+        asm volatile("setmaxnreg.dec.sync.aligned.u32 128;");
+    } else if (warp >= 8 && warp <= 11) {
         asm volatile("setmaxnreg.dec.sync.aligned.u32 64;");
     }
+    __syncthreads();
+    // Inc phase consumes the registers released above.
+    if (warp >= 0 && warp <= 3) {
+        asm volatile("setmaxnreg.inc.sync.aligned.u32 192;");
+    }
+    __syncthreads();
 
     // ---- Role: softmax ----
-    if (warp <= 3) {
-        asm volatile("setmaxnreg.inc.sync.aligned.u32 192;");
+    if (warp <= 1) {
         { // softmax_main
             float softmax_scale_log2 = bmm1_scale[0] * 1.4426950408889634f;
             int query_idx = blockIdx.x >> 2;
@@ -1197,8 +1204,7 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
                 float _max_1 = max_noftz(row_max, sink_unscaled);
                 row_max = _max_1;
             }
-            bool empty_row = row_max == -CAKE_INF;
-            float safe_max = ((empty_row) ? 0.0f : row_max);
+            float safe_max = ((row_max == -CAKE_INF) ? 0.0f : row_max);
             float max_scaled = safe_max * softmax_scale_log2;
             float2 _f2_0 = make_float2(softmax_scale_log2, softmax_scale_log2);
             float2 _f2_1 = make_float2(-max_scaled, -max_scaled);
@@ -1279,13 +1285,11 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
                 " [%0], 32, {%1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16};"
                 :: "r"(p_addr + 16), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[0])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[1])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[2])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[3])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[4])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[5])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[6])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[7])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[8])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[9])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[10])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[11])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[12])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[13])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[14])), "r"(*reinterpret_cast<const uint32_t*>(&(packed_p + 16)[15])));
             asm volatile("tcgen05.wait::st.sync.aligned;" ::: "memory");
-            mbarrier_arrive(p_full_addr);
             if (col_half == 0) {
-                float _max_2 = max_noftz(row_sum, 1.1754943508222875e-38f);
-                float published_sum = _max_2;
-                smem_sum[my_row] = published_sum;
+                smem_sum[my_row] = row_sum;
             }
             asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+            mbarrier_arrive(p_full_addr);
             mbarrier_arrive(sum_ready_addr);
             asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
             asm volatile("tcgen05.fence::before_thread_sync;");
@@ -1293,8 +1297,7 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
         }
     }
     // ---- Role: epilogue ----
-    if (warp >= 4 && warp <= 7) {
-        asm volatile("setmaxnreg.dec.sync.aligned.u32 128;");
+    if (warp >= 4 && warp <= 5) {
         { // epilogue_main
             float output_scale = bmm2_scale[0];
             int work_idx = blockIdx.x;
@@ -1313,8 +1316,7 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
             mbarrier_wait(sum_ready_addr, _phase_sum_ready_0);
             _phase_sum_ready_0 ^= 1;
             asm volatile("tcgen05.fence::after_thread_sync;");
-            float row_sum_1 = smem_sum[my_row_1];
-            float _rcp_0 = approx_rcp(row_sum_1);
+            float _rcp_0 = approx_rcp(smem_sum[my_row_1]);
             float inv_sum = _rcp_0;
             int output_base = (query_idx_1 * num_heads + my_row_1) * 512 + v_chunk * 128;
             float _tmem_load_1[64];
@@ -1421,13 +1423,13 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
                 }
                 elect_commit(kv_empty_addr + (k_stage) * 8);
             }
-            int _mma_prepared_b_lo_2 = make_warp_uniform(((((smem_v_addr) >> 4) & 0x3FFF) | 0x4000000) + (0) * 2048);
             unsigned int _phase_p_full_0 = 0;
             mbarrier_wait(p_full_addr, _phase_p_full_0);
             _phase_p_full_0 ^= 1;
             asm volatile("tcgen05.fence::after_thread_sync;");
             mbarrier_wait(kv_full_addr, 1);
             asm volatile("tcgen05.fence::after_thread_sync;");
+            int _mma_b_lo_2 = make_warp_uniform(((((smem_v_addr) >> 4) & 0x3FFF) | 0x4000000) + (0) * 2048);
             asm volatile(
                     "{\n\t"
                     ".reg .pred leader, p0, p1;\n\t"
@@ -1472,7 +1474,7 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
                     "mov.b64 db, {blo, dhi};\n\t"
                     "@leader tcgen05.mma.cta_group::1.kind::f16 [%0], [ta], db, id, p1;\n\t"
                     "}\n"
-                    :: "r"((tmem_tmem + (256))), "r"(_mma_prepared_b_lo_2), "r"(tmem_tmem + 128), "r"(0));
+                    :: "r"((tmem_tmem + (256))), "r"(_mma_b_lo_2), "r"(tmem_tmem + 128), "r"(0));
             elect_commit(o_done_addr);
             elect_commit(kv_empty_addr);
             unsigned int _phase_tmem_dealloc_0 = 0;
@@ -1484,7 +1486,7 @@ kernel_cake_dsv4_bf16_swa128_single_cta(CakeTensorMap const* tmap_q, CakeTensorM
         }
     }
     // ---- Role: empty ----
-    if (warp >= 9 && warp <= 11) {
+    if (warp == 2 || warp == 3 || warp == 6 || warp == 7 || warp == 9 || warp == 10 || warp == 11) {
         // idle — no tasks assigned
     }
     // ---- Role: load_warp ----

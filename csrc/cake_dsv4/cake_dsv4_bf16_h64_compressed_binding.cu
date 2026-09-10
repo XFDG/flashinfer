@@ -1,14 +1,18 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 #include "tvm_ffi_utils.h"
+#include <tvm/ffi/extra/cuda/cubin_launcher.h>
 
 #define uint8_t cake_dsv4_generated_uint8_t
 #define uint16_t cake_dsv4_generated_uint16_t
@@ -17,9 +21,7 @@
 #define int32_t cake_dsv4_generated_int32_t
 #define int16_t cake_dsv4_generated_int16_t
 #define CakeTensorMap cake_dsv4_generated_CakeTensorMap
-#define CUtensorMap cake_dsv4_generated_CUtensorMap
 #include "cake_dsv4_bf16_h64_compressed.cu"
-#undef CUtensorMap
 #undef CakeTensorMap
 #undef uint8_t
 #undef uint16_t
@@ -32,10 +34,68 @@ namespace flashinfer::cake_dsv4 {
 
 namespace {
 
+static_assert(sizeof(CUtensorMap) == 128);
+static_assert(sizeof(cake_dsv4_generated_CakeTensorMap) == sizeof(CUtensorMap));
+static_assert(alignof(cake_dsv4_generated_CakeTensorMap) >= alignof(CUtensorMap));
+static_assert(offsetof(cake_dsv4_generated_CakeTensorMap, opaque) == 0);
+static_assert(sizeof(((cake_dsv4_generated_CakeTensorMap*)nullptr)->opaque) == sizeof(CUtensorMap));
+static_assert(std::is_standard_layout<cake_dsv4_generated_CakeTensorMap>::value);
+static_assert(std::is_trivially_copyable<cake_dsv4_generated_CakeTensorMap>::value);
 
 
 
+using tvm::ffi::Optional;
 using tvm::ffi::TensorView;
+
+class ScopedCudaDevice {
+ public:
+  explicit ScopedCudaDevice(int device_id) {
+    cudaError_t error = cudaGetDevice(&previous_device_);
+    TVM_FFI_CHECK(error == cudaSuccess, RuntimeError)
+        << "cudaGetDevice failed before host-shim launch: cudaError="
+        << static_cast<int>(error);
+    if (previous_device_ != device_id) {
+      error = cudaSetDevice(device_id);
+      TVM_FFI_CHECK(error == cudaSuccess, RuntimeError)
+          << "cudaSetDevice failed before host-shim launch for cuda:"
+          << device_id << ": cudaError=" << static_cast<int>(error);
+      restore_ = true;
+    }
+  }
+
+  ScopedCudaDevice(const ScopedCudaDevice&) = delete;
+  ScopedCudaDevice& operator=(const ScopedCudaDevice&) = delete;
+
+  ~ScopedCudaDevice() noexcept {
+    if (restore_) {
+      (void)cudaSetDevice(previous_device_);
+    }
+  }
+
+ private:
+  int previous_device_ = -1;
+  bool restore_ = false;
+};
+
+inline int64_t CakeDeviceMultiprocessorCount(int device_id) {
+  constexpr int kMaxCachedCudaDevices = 64;
+  TVM_FFI_CHECK(device_id >= 0 && device_id < kMaxCachedCudaDevices, RuntimeError)
+      << "physical-SM-count cache does not cover cuda:" << device_id;
+  static std::atomic<int> count_by_device[kMaxCachedCudaDevices]{};
+  int cached = count_by_device[device_id].load(std::memory_order_acquire);
+  if (cached > 0) return cached;
+
+  int count = 0;
+  cudaError_t error = cudaDeviceGetAttribute(
+      &count, cudaDevAttrMultiProcessorCount, device_id);
+  TVM_FFI_CHECK(error == cudaSuccess && count > 0, RuntimeError)
+      << "querying multiProcessorCount failed for cuda:" << device_id
+      << ": cudaError=" << static_cast<int>(error) << ", count=" << count;
+  // Concurrent first launches may repeat the immutable device query, but all
+  // publication is atomic and every later hot-path lookup is one acquire load.
+  count_by_device[device_id].store(count, std::memory_order_release);
+  return count;
+}
 
 inline void CheckCudaTensor(const TensorView& t, const char* name) {
   TVM_FFI_CHECK(t.device().device_type == kDLCUDA, ValueError)
@@ -51,6 +111,20 @@ inline void CheckSameCudaDevice(
       << name << " must be on the same CUDA device as " << reference_name
       << ": got cuda:" << t.device().device_id
       << " versus cuda:" << reference.device().device_id;
+}
+
+inline void CheckCurrentCudaDevice(
+    const TensorView& reference,
+    const char* reference_name) {
+  int current_device = -1;
+  cudaError_t error = cudaGetDevice(&current_device);
+  TVM_FFI_CHECK(error == cudaSuccess, RuntimeError)
+      << "cudaGetDevice failed while validating " << reference_name
+      << ": cudaError=" << static_cast<int>(error);
+  TVM_FFI_CHECK(current_device == reference.device().device_id, ValueError)
+      << "current CUDA device must match " << reference_name
+      << ": current=cuda:" << current_device
+      << ", tensor=cuda:" << reference.device().device_id;
 }
 
 inline void CheckContiguous(const TensorView& t, const char* name) {
@@ -93,6 +167,103 @@ inline void CheckDenseLeadingFold(const TensorView& t, int trailing, const char*
   }
 }
 
+#include <dlfcn.h>
+
+// CUDA 13.4 adds an oversized shared-memory mode (function/launch attribute
+// SHARED_MEMORY_MODE = 3) that lets a kernel exceed the standard
+// MaxSharedMemoryPerBlockOptin ceiling up to device attribute 150
+// (OversizedSharedMemoryPerBlock), at the cost of an 8 KiB L1 carveout.
+#if (TVM_FFI_CUBIN_LAUNCHER_USE_DRIVER_API && defined(CUDA_VERSION) && CUDA_VERSION >= 13040) || \
+    (!TVM_FFI_CUBIN_LAUNCHER_USE_DRIVER_API && defined(CUDART_VERSION) && CUDART_VERSION >= 13040)
+#define CAKE_HAS_OVERSIZED_SMEM 1
+#else
+#define CAKE_HAS_OVERSIZED_SMEM 0
+#endif
+
+// Per-device dynamic-SMEM opt-in. Returns true when launches on this device
+// must carry the ALLOW_OVERSIZED shared-memory-mode launch attribute: the
+// request exceeds the device's standard opt-in ceiling
+// (MaxSharedMemoryPerBlockOptin, attribute 97) but fits the oversized ceiling
+// (OversizedSharedMemoryPerBlock, attribute 150). Within the standard ceiling
+// it sets MAX_DYNAMIC_SHARED_SIZE_BYTES for the device, mirroring
+// CubinKernel::SetMaxDynamicSharedMemory. cache: 0 = unresolved,
+// 1 = standard opt-in done, 2 = oversized mode required.
+inline bool CakeConfigureDynamicSmem(tvm::ffi::CubinKernel& kernel, int device_id,
+                                     int smem_bytes, signed char* cache, int cache_len) {
+  namespace cuda_api = tvm::ffi::cuda_api;
+  TVM_FFI_CHECK(device_id >= 0 && device_id < cache_len, RuntimeError)
+      << "dynamic-SMEM opt-in cache does not cover cuda:" << device_id;
+  if (cache[device_id] != 0) {
+    return cache[device_id] == 2;
+  }
+  auto device = cuda_api::GetDeviceHandle(device_id);
+  int optin_max = 0;
+  cuda_api::ResultType err = cuda_api::GetDeviceAttribute(
+      &optin_max,
+      /* CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN /
+         cudaDevAttrMaxSharedMemoryPerBlockOptin */
+      cuda_api::DeviceAttrType(97), device);
+  TVM_FFI_CHECK(err == cuda_api::kSuccess, RuntimeError)
+      << "querying MaxSharedMemoryPerBlockOptin failed for cuda:" << device_id;
+  if (smem_bytes <= optin_max) {
+    err = cuda_api::SetKernelMaxDynamicSharedMem(kernel.GetHandle(), smem_bytes, device);
+    TVM_FFI_CHECK(err == cuda_api::kSuccess, RuntimeError)
+        << "MAX_DYNAMIC_SHARED_SIZE_BYTES=" << smem_bytes << " rejected for cuda:" << device_id;
+    cache[device_id] = 1;
+    return false;
+  }
+#if CAKE_HAS_OVERSIZED_SMEM
+  int oversized_max = 0;
+  err = cuda_api::GetDeviceAttribute(
+      &oversized_max,
+      /* CU_DEVICE_ATTRIBUTE_MAX_OVERSIZED_SHARED_MEMORY_PER_BLOCK /
+         cudaDevAttrOversizedSharedMemoryPerBlock */
+      cuda_api::DeviceAttrType(150), device);
+  TVM_FFI_CHECK(err == cuda_api::kSuccess && oversized_max >= smem_bytes, RuntimeError)
+      << "dynamic smem " << smem_bytes << " B exceeds the standard opt-in ceiling ("
+      << optin_max << " B) on cuda:" << device_id << " and the oversized ceiling is "
+      << oversized_max << " B";
+  // Also set the function-level shared-memory mode: profiler-instrumented
+  // launches (ncu) honor only the function-level attribute for oversized
+  // dynamic SMEM and fail with LaunchFailed on the launch attribute alone.
+#if TVM_FFI_CUBIN_LAUNCHER_USE_DRIVER_API
+  err = cuKernelSetAttribute(CU_FUNC_ATTRIBUTE_SHARED_MEMORY_MODE,
+                             CU_SHARED_MEMORY_MODE_ALLOW_OVERSIZED_SHARED_MEMORY,
+                             kernel.GetHandle(), device);
+  TVM_FFI_CHECK(err == cuda_api::kSuccess, RuntimeError)
+      << "setting SHARED_MEMORY_MODE=ALLOW_OVERSIZED failed for cuda:" << device_id
+      << " (error " << static_cast<int>(err) << ")";
+#else
+  // The process cudart may predate 13.4 (e.g. torch's pip cudart 13.0) and
+  // reject cudaFuncAttributeSharedMemoryMode with cudaErrorInvalidValue even
+  // though the driver supports the mode, so call the driver entry point
+  // directly: cudaKernel_t is interchangeable with CUkernel, the runtime
+  // device ordinal is the CUdevice, and libcuda.so.1 is already loaded.
+  {
+    using CakeCuKernelSetAttributeFn = int (*)(int attrib, int val, void* kernel, int dev);
+    static const auto cake_cu_kernel_set_attribute =
+        reinterpret_cast<CakeCuKernelSetAttributeFn>(dlsym(RTLD_DEFAULT, "cuKernelSetAttribute"));
+    TVM_FFI_CHECK(cake_cu_kernel_set_attribute != nullptr, RuntimeError)
+        << "cuKernelSetAttribute not resolvable while enabling the oversized shared-memory mode";
+    int drv_err = cake_cu_kernel_set_attribute(
+        /* CU_FUNC_ATTRIBUTE_SHARED_MEMORY_MODE */ 17,
+        /* CU_SHARED_MEMORY_MODE_ALLOW_OVERSIZED_SHARED_MEMORY */ 3,
+        reinterpret_cast<void*>(kernel.GetHandle()), device_id);
+    TVM_FFI_CHECK(drv_err == 0, RuntimeError)
+        << "setting SHARED_MEMORY_MODE=ALLOW_OVERSIZED failed for cuda:" << device_id
+        << " (driver error " << drv_err << ")";
+  }
+#endif
+  cache[device_id] = 2;
+  return true;
+#else
+  TVM_FFI_THROW(RuntimeError)
+      << "dynamic smem " << smem_bytes << " B exceeds the standard opt-in ceiling ("
+      << optin_max << " B) on cuda:" << device_id
+      << " and this CUDA toolkit predates the 13.4 oversized shared-memory mode";
+#endif
+}
+
 struct TmaDeviceArena {
   static constexpr size_t kSlotsPerChunk = 256;
   static constexpr size_t kMaxSlots = 4096;
@@ -131,6 +302,32 @@ static inline void* TmaDeviceSlot(
   key.push_back(':');
   key.append(reinterpret_cast<const char*>(&tm), sizeof(CUtensorMap));
   std::lock_guard<std::mutex> lock(mu);
+
+  // CUcontext is an opaque, recyclable handle.  Before trusting a warm arena,
+  // prove that its first allocation still belongs to this live context.  A
+  // destroyed context makes the pointer query fail; a subsequently reused
+  // handle must therefore discard the stale pointer and descriptor entries.
+  auto arena_it = arenas->find(current_context);
+  if (arena_it != arenas->end() && !arena_it->second.chunks.empty()) {
+    CUcontext allocation_context = nullptr;
+    result = cuPointerGetAttribute(
+        &allocation_context,
+        CU_POINTER_ATTRIBUTE_CONTEXT,
+        arena_it->second.chunks.front());
+    if (result != CUDA_SUCCESS || allocation_context != current_context) {
+      const std::string prefix =
+          std::to_string(reinterpret_cast<uintptr_t>(current_context)) + ":";
+      for (auto slot_it = slots->begin(); slot_it != slots->end();) {
+        if (slot_it->first.compare(0, prefix.size(), prefix) == 0) {
+          slot_it = slots->erase(slot_it);
+        } else {
+          ++slot_it;
+        }
+      }
+      arenas->erase(arena_it);
+    }
+  }
+
   auto it = slots->find(key);
   if (it != slots->end()) return it->second;
 
@@ -195,14 +392,35 @@ inline CUtensorMap EncodeTma_tmap_q(const TensorView& t) {
       << "TMA descriptor for 'tmap_q' resolved a non-positive global dim";
   TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[2] && 1u <= global_dim[3], ValueError)
       << "TMA box (64, 64, 1, 1) exceeds resolved global dims for 'tmap_q'";
+  int64_t carrier_stride_0 = d1;
+  TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 1 negative";
+  TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 1 zero while global dimension 1 is not 1";
+  TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 1 to a non-whole-byte offset";
+  int64_t carrier_stride_1 = 64;
+  TVM_FFI_CHECK(carrier_stride_1 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 2 negative";
+  TVM_FFI_CHECK(carrier_stride_1 != 0 || global_dim[2] == 1, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 2 zero while global dimension 2 is not 1";
+  TVM_FFI_CHECK((carrier_stride_1 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 2 to a non-whole-byte offset";
+  int64_t carrier_stride_2 = (d2 * d1);
+  TVM_FFI_CHECK(carrier_stride_2 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 3 negative";
+  TVM_FFI_CHECK(carrier_stride_2 != 0 || global_dim[3] == 1, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 3 zero while global dimension 3 is not 1";
+  TVM_FFI_CHECK((carrier_stride_2 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_q' resolved global stride 3 to a non-whole-byte offset";
   uint64_t global_strides[3] = {
-      (uint64_t)((d1 * 16) / 8),
-      (uint64_t)((64 * 16) / 8),
-      (uint64_t)(((d2 * d1) * 16) / 8),
+      (uint64_t)((carrier_stride_0 * 16) / 8),
+      (uint64_t)((carrier_stride_1 * 16) / 8),
+      (uint64_t)((carrier_stride_2 * 16) / 8),
   };
   uint32_t box_dim[4] = {64u, 64u, 1u, 1u};
   uint32_t elem_strides[4] = {1u, 1u, 1u, 1u};
-  CUtensorMap tm;
+  CUtensorMap tm{};
   CUresult r = cuTensorMapEncodeTiled(
       &tm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 4, t.data_ptr(), global_dim, global_strides, box_dim, elem_strides,
       CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
@@ -232,12 +450,19 @@ inline CUtensorMap EncodeTma_tmap_swa_kv(const TensorView& t) {
       << "TMA descriptor for 'tmap_swa_kv' resolved a non-positive global dim";
   TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
       << "TMA box (64, 1) exceeds resolved global dims for 'tmap_swa_kv'";
+  int64_t carrier_stride_0 = s2;
+  TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 negative";
+  TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
+      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 zero while global dimension 1 is not 1";
+  TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 to a non-whole-byte offset";
   uint64_t global_strides[1] = {
-      (uint64_t)((s2 * 16) / 8),
+      (uint64_t)((carrier_stride_0 * 16) / 8),
   };
   uint32_t box_dim[2] = {64u, 1u};
   uint32_t elem_strides[2] = {1u, 1u};
-  CUtensorMap tm;
+  CUtensorMap tm{};
   CUresult r = cuTensorMapEncodeTiled(
       &tm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, t.data_ptr(), global_dim, global_strides, box_dim, elem_strides,
       CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
@@ -267,12 +492,19 @@ inline CUtensorMap EncodeTma_tmap_compressed_kv(const TensorView& t) {
       << "TMA descriptor for 'tmap_compressed_kv' resolved a non-positive global dim";
   TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
       << "TMA box (64, 1) exceeds resolved global dims for 'tmap_compressed_kv'";
+  int64_t carrier_stride_0 = s2;
+  TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 negative";
+  TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
+      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 zero while global dimension 1 is not 1";
+  TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 to a non-whole-byte offset";
   uint64_t global_strides[1] = {
-      (uint64_t)((s2 * 16) / 8),
+      (uint64_t)((carrier_stride_0 * 16) / 8),
   };
   uint32_t box_dim[2] = {64u, 1u};
   uint32_t elem_strides[2] = {1u, 1u};
-  CUtensorMap tm;
+  CUtensorMap tm{};
   CUresult r = cuTensorMapEncodeTiled(
       &tm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, t.data_ptr(), global_dim, global_strides, box_dim, elem_strides,
       CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
@@ -288,9 +520,10 @@ inline CUtensorMap EncodeTma_tmap_compressed_kv(const TensorView& t) {
 void Run_bf16_h64_compressed(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, TensorView arg_tmap_compressed_kv, TensorView arg_partial_O, TensorView arg_partial_lse, TensorView arg_sparse_indices, TensorView arg_sparse_topk_lens, TensorView arg_sinks, TensorView arg_bmm1_scale, TensorView arg_bmm2_scale, int64_t arg_num_heads, int64_t arg_sparse_topk, int64_t arg_num_splits, int64_t arg_has_sinks, int64_t grid_x, int64_t grid_y, int64_t grid_z, int64_t cuda_stream) {
   TVM_FFI_CHECK(cuda_stream >= 0, ValueError)
       << "cuda_stream must be non-negative";
-  ffi::CUDADeviceGuard device_guard(arg_tmap_q.device().device_id);
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
       static_cast<uintptr_t>(cuda_stream));
+  DLDevice dev = arg_tmap_q.device();
+  ScopedCudaDevice device_guard(dev.device_id);
   CheckCudaTensor(arg_tmap_q, "tmap_q");
   CheckDtype(arg_tmap_q, "tmap_q", 4, 16, 1);
   CheckContiguous(arg_tmap_q, "tmap_q");
@@ -340,6 +573,7 @@ void Run_bf16_h64_compressed(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, 
   CheckSameCudaDevice(arg_sinks, arg_tmap_q, "sinks", "tmap_q");
   CheckSameCudaDevice(arg_bmm1_scale, arg_tmap_q, "bmm1_scale", "tmap_q");
   CheckSameCudaDevice(arg_bmm2_scale, arg_tmap_q, "bmm2_scale", "tmap_q");
+  CheckCurrentCudaDevice(arg_tmap_q, "tmap_q");
   TVM_FFI_CHECK(grid_x > 0 && grid_y > 0 && grid_z > 0, ValueError)
       << "launch grid dimensions must be positive, got (" << grid_x << ", " << grid_y
       << ", " << grid_z << ")";

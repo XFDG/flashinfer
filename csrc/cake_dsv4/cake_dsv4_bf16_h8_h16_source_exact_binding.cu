@@ -21,7 +21,7 @@
 #define int32_t cake_dsv4_generated_int32_t
 #define int16_t cake_dsv4_generated_int16_t
 #define CakeTensorMap cake_dsv4_generated_CakeTensorMap
-#include "cake_dsv4_bf16_h64_fixed_q.cu"
+#include "cake_dsv4_bf16_h8_h16_source_exact.cu"
 #undef CakeTensorMap
 #undef uint8_t
 #undef uint16_t
@@ -390,8 +390,8 @@ inline CUtensorMap EncodeTma_tmap_q(const TensorView& t) {
   uint64_t global_dim[4] = {(uint64_t)(64), (uint64_t)(d2), (uint64_t)((d1 / 64)), (uint64_t)(d3)};
   TVM_FFI_CHECK(global_dim[0] > 0 && global_dim[1] > 0 && global_dim[2] > 0 && global_dim[3] > 0, ValueError)
       << "TMA descriptor for 'tmap_q' resolved a non-positive global dim";
-  TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[2] && 1u <= global_dim[3], ValueError)
-      << "TMA box (64, 64, 1, 1) exceeds resolved global dims for 'tmap_q'";
+  TVM_FFI_CHECK(64u <= global_dim[0] && 2u <= global_dim[2] && 1u <= global_dim[3], ValueError)
+      << "TMA box (64, 8, 2, 1) exceeds resolved global dims for 'tmap_q'";
   int64_t carrier_stride_0 = d1;
   TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
       << "TMA descriptor for 'tmap_q' resolved global stride 1 negative";
@@ -418,7 +418,7 @@ inline CUtensorMap EncodeTma_tmap_q(const TensorView& t) {
       (uint64_t)((carrier_stride_1 * 16) / 8),
       (uint64_t)((carrier_stride_2 * 16) / 8),
   };
-  uint32_t box_dim[4] = {64u, 64u, 1u, 1u};
+  uint32_t box_dim[4] = {64u, 8u, 2u, 1u};
   uint32_t elem_strides[4] = {1u, 1u, 1u, 1u};
   CUtensorMap tm{};
   CUresult r = cuTensorMapEncodeTiled(
@@ -517,7 +517,7 @@ inline CUtensorMap EncodeTma_tmap_compressed_kv(const TensorView& t) {
 }  // namespace
 
 
-void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, TensorView arg_tmap_compressed_kv, TensorView arg_partial_O, TensorView arg_partial_lse, TensorView arg_sparse_indices, TensorView arg_sparse_topk_lens, TensorView arg_sinks, TensorView arg_bmm1_scale, TensorView arg_bmm2_scale, int64_t arg_num_heads, int64_t arg_sparse_topk, int64_t arg_num_splits, int64_t arg_has_sinks, int64_t grid_x, int64_t grid_y, int64_t grid_z, int64_t cuda_stream) {
+void Run_bf16_h8_h16_source_exact(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, TensorView arg_tmap_compressed_kv, TensorView arg_O, TensorView arg_sparse_indices, TensorView arg_sparse_topk_lens, TensorView arg_seq_lens, TensorView arg_cum_seq_lens_q, TensorView arg_sinks, TensorView arg_bmm1_scale, TensorView arg_bmm2_scale, int64_t arg_sparse_topk, int64_t arg_max_q_len, int64_t arg_batch_size, int64_t arg_has_sinks, int64_t grid_x, int64_t grid_y, int64_t grid_z, int64_t cuda_stream) {
   TVM_FFI_CHECK(cuda_stream >= 0, ValueError)
       << "cuda_stream must be non-negative";
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
@@ -531,18 +531,21 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   CheckDtype(arg_tmap_swa_kv, "tmap_swa_kv", 4, 16, 1);
   CheckCudaTensor(arg_tmap_compressed_kv, "tmap_compressed_kv");
   CheckDtype(arg_tmap_compressed_kv, "tmap_compressed_kv", 4, 16, 1);
-  CheckCudaTensor(arg_partial_O, "partial_O");
-  CheckDtype(arg_partial_O, "partial_O", 4, 16, 1);
-  CheckContiguous(arg_partial_O, "partial_O");
-  CheckCudaTensor(arg_partial_lse, "partial_lse");
-  CheckDtype(arg_partial_lse, "partial_lse", 2, 32, 1);
-  CheckContiguous(arg_partial_lse, "partial_lse");
+  CheckCudaTensor(arg_O, "O");
+  CheckDtype(arg_O, "O", 4, 16, 1);
+  CheckContiguous(arg_O, "O");
   CheckCudaTensor(arg_sparse_indices, "sparse_indices");
   CheckDtype(arg_sparse_indices, "sparse_indices", 0, 32, 1);
   CheckContiguous(arg_sparse_indices, "sparse_indices");
   CheckCudaTensor(arg_sparse_topk_lens, "sparse_topk_lens");
   CheckDtype(arg_sparse_topk_lens, "sparse_topk_lens", 0, 32, 1);
   CheckContiguous(arg_sparse_topk_lens, "sparse_topk_lens");
+  CheckCudaTensor(arg_seq_lens, "seq_lens");
+  CheckDtype(arg_seq_lens, "seq_lens", 0, 32, 1);
+  CheckContiguous(arg_seq_lens, "seq_lens");
+  CheckCudaTensor(arg_cum_seq_lens_q, "cum_seq_lens_q");
+  CheckDtype(arg_cum_seq_lens_q, "cum_seq_lens_q", 0, 32, 1);
+  CheckContiguous(arg_cum_seq_lens_q, "cum_seq_lens_q");
   CheckCudaTensor(arg_sinks, "sinks");
   CheckDtype(arg_sinks, "sinks", 2, 32, 1);
   CheckContiguous(arg_sinks, "sinks");
@@ -552,24 +555,25 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   CheckCudaTensor(arg_bmm2_scale, "bmm2_scale");
   CheckDtype(arg_bmm2_scale, "bmm2_scale", 2, 32, 1);
   CheckContiguous(arg_bmm2_scale, "bmm2_scale");
-  TVM_FFI_CHECK(arg_num_heads >= -2147483648LL && arg_num_heads <= 2147483647LL, ValueError)
-      << "scalar 'num_heads' value " << arg_num_heads
-      << " is outside i32 range [-2147483648, 2147483647]";
   TVM_FFI_CHECK(arg_sparse_topk >= -2147483648LL && arg_sparse_topk <= 2147483647LL, ValueError)
       << "scalar 'sparse_topk' value " << arg_sparse_topk
       << " is outside i32 range [-2147483648, 2147483647]";
-  TVM_FFI_CHECK(arg_num_splits >= -2147483648LL && arg_num_splits <= 2147483647LL, ValueError)
-      << "scalar 'num_splits' value " << arg_num_splits
+  TVM_FFI_CHECK(arg_max_q_len >= -2147483648LL && arg_max_q_len <= 2147483647LL, ValueError)
+      << "scalar 'max_q_len' value " << arg_max_q_len
+      << " is outside i32 range [-2147483648, 2147483647]";
+  TVM_FFI_CHECK(arg_batch_size >= -2147483648LL && arg_batch_size <= 2147483647LL, ValueError)
+      << "scalar 'batch_size' value " << arg_batch_size
       << " is outside i32 range [-2147483648, 2147483647]";
   TVM_FFI_CHECK(arg_has_sinks >= -2147483648LL && arg_has_sinks <= 2147483647LL, ValueError)
       << "scalar 'has_sinks' value " << arg_has_sinks
       << " is outside i32 range [-2147483648, 2147483647]";
   CheckSameCudaDevice(arg_tmap_swa_kv, arg_tmap_q, "tmap_swa_kv", "tmap_q");
   CheckSameCudaDevice(arg_tmap_compressed_kv, arg_tmap_q, "tmap_compressed_kv", "tmap_q");
-  CheckSameCudaDevice(arg_partial_O, arg_tmap_q, "partial_O", "tmap_q");
-  CheckSameCudaDevice(arg_partial_lse, arg_tmap_q, "partial_lse", "tmap_q");
+  CheckSameCudaDevice(arg_O, arg_tmap_q, "O", "tmap_q");
   CheckSameCudaDevice(arg_sparse_indices, arg_tmap_q, "sparse_indices", "tmap_q");
   CheckSameCudaDevice(arg_sparse_topk_lens, arg_tmap_q, "sparse_topk_lens", "tmap_q");
+  CheckSameCudaDevice(arg_seq_lens, arg_tmap_q, "seq_lens", "tmap_q");
+  CheckSameCudaDevice(arg_cum_seq_lens_q, arg_tmap_q, "cum_seq_lens_q", "tmap_q");
   CheckSameCudaDevice(arg_sinks, arg_tmap_q, "sinks", "tmap_q");
   CheckSameCudaDevice(arg_bmm1_scale, arg_tmap_q, "bmm1_scale", "tmap_q");
   CheckSameCudaDevice(arg_bmm2_scale, arg_tmap_q, "bmm2_scale", "tmap_q");
@@ -577,9 +581,6 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   TVM_FFI_CHECK(grid_x > 0 && grid_y > 0 && grid_z > 0, ValueError)
       << "launch grid dimensions must be positive, got (" << grid_x << ", " << grid_y
       << ", " << grid_z << ")";
-  TVM_FFI_CHECK(grid_x % 2 == 0 && grid_y % 1 == 0 && grid_z % 1 == 0, ValueError)
-      << "launch grid (" << grid_x << ", " << grid_y << ", " << grid_z
-      << ") must be divisible by cluster dims (2, 1, 1)";
 
 
   CUtensorMap h_tmap_q = EncodeTma_tmap_q(arg_tmap_q);
@@ -588,48 +589,38 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   void* p_tmap_swa_kv = TmaDeviceSlot(h_tmap_swa_kv, arg_tmap_swa_kv.device().device_id, stream);
   CUtensorMap h_tmap_compressed_kv = EncodeTma_tmap_compressed_kv(arg_tmap_compressed_kv);
   void* p_tmap_compressed_kv = TmaDeviceSlot(h_tmap_compressed_kv, arg_tmap_compressed_kv.device().device_id, stream);
-  void* p_partial_O = arg_partial_O.data_ptr();
-  void* p_partial_lse = arg_partial_lse.data_ptr();
+  void* p_O = arg_O.data_ptr();
   void* p_sparse_indices = arg_sparse_indices.data_ptr();
   void* p_sparse_topk_lens = arg_sparse_topk_lens.data_ptr();
+  void* p_seq_lens = arg_seq_lens.data_ptr();
+  void* p_cum_seq_lens_q = arg_cum_seq_lens_q.data_ptr();
   void* p_sinks = arg_sinks.data_ptr();
   void* p_bmm1_scale = arg_bmm1_scale.data_ptr();
   void* p_bmm2_scale = arg_bmm2_scale.data_ptr();
-  int32_t v_num_heads = (int32_t)arg_num_heads;
   int32_t v_sparse_topk = (int32_t)arg_sparse_topk;
-  int32_t v_num_splits = (int32_t)arg_num_splits;
+  int32_t v_max_q_len = (int32_t)arg_max_q_len;
+  int32_t v_batch_size = (int32_t)arg_batch_size;
   int32_t v_has_sinks = (int32_t)arg_has_sinks;
-  void* kargs[] = {&p_tmap_q, &p_tmap_swa_kv, &p_tmap_compressed_kv, &p_partial_O, &p_partial_lse, &p_sparse_indices, &p_sparse_topk_lens, &p_sinks, &p_bmm1_scale, &p_bmm2_scale, &v_num_heads, &v_sparse_topk, &v_num_splits, &v_has_sinks};
+  void* kargs[] = {&p_tmap_q, &p_tmap_swa_kv, &p_tmap_compressed_kv, &p_O, &p_sparse_indices, &p_sparse_topk_lens, &p_seq_lens, &p_cum_seq_lens_q, &p_sinks, &p_bmm1_scale, &p_bmm2_scale, &v_sparse_topk, &v_max_q_len, &v_batch_size, &v_has_sinks};
 
   dim3 grid((uint32_t)grid_x, (uint32_t)grid_y, (uint32_t)grid_z);
-  dim3 block(416u, 1u, 1u);
+  dim3 block(512u, 1u, 1u);
   cudaError_t status = cudaSuccess;
-  status = cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h64_fixed_q,
+  status = cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h8_h16_source_exact,
       cudaFuncAttributeMaxDynamicSharedMemorySize,
-      215168);
+      153216);
   TVM_FFI_CHECK(status == cudaSuccess, RuntimeError)
-      << "cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h64_fixed_q) failed: "
+      << "cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h8_h16_source_exact) failed: "
       << cudaGetErrorString(status);
-  cudaLaunchConfig_t config = {};
-  config.gridDim = grid;
-  config.blockDim = block;
-  config.dynamicSmemBytes = 215168u;
-  config.stream = stream;
-  cudaLaunchAttribute attrs[1] = {};
-  attrs[0].id = cudaLaunchAttributeClusterDimension;
-  attrs[0].val.clusterDim.x = 2u;
-  attrs[0].val.clusterDim.y = 1u;
-  attrs[0].val.clusterDim.z = 1u;
-  config.attrs = attrs;
-  config.numAttrs = 1;
-  status = cudaLaunchKernelExC(
-      &config, reinterpret_cast<const void*>(kernel_cake_dsv4_bf16_h64_fixed_q), kargs);
+  status = cudaLaunchKernel(
+      reinterpret_cast<const void*>(kernel_cake_dsv4_bf16_h8_h16_source_exact), grid, block, kargs,
+      153216u, stream);
   TVM_FFI_CHECK(status == cudaSuccess, RuntimeError)
-      << "kernel_cake_dsv4_bf16_h64_fixed_q launch failed: " << cudaGetErrorString(status);
+      << "kernel_cake_dsv4_bf16_h8_h16_source_exact launch failed: " << cudaGetErrorString(status);
 }
 
 
 }  // namespace flashinfer::cake_dsv4
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(
-    run_bf16_h64_fixed_q, flashinfer::cake_dsv4::Run_bf16_h64_fixed_q);
+    run_bf16_h8_h16_source_exact, flashinfer::cake_dsv4::Run_bf16_h8_h16_source_exact);

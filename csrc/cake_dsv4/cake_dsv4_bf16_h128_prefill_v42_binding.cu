@@ -21,7 +21,7 @@
 #define int32_t cake_dsv4_generated_int32_t
 #define int16_t cake_dsv4_generated_int16_t
 #define CakeTensorMap cake_dsv4_generated_CakeTensorMap
-#include "cake_dsv4_bf16_h64_fixed_q.cu"
+#include "cake_dsv4_bf16_h128_prefill_v42.cu"
 #undef CakeTensorMap
 #undef uint8_t
 #undef uint16_t
@@ -264,114 +264,6 @@ inline bool CakeConfigureDynamicSmem(tvm::ffi::CubinKernel& kernel, int device_i
 #endif
 }
 
-struct TmaDeviceArena {
-  static constexpr size_t kSlotsPerChunk = 256;
-  static constexpr size_t kMaxSlots = 4096;
-  std::vector<CUdeviceptr> chunks;
-  size_t used = 0;
-};
-
-// Immutable, process-lifetime device tensor-map slots for the pointer ABI.
-// A slot is never rewritten: different descriptor bytes always get a new
-// address, so concurrent streams cannot observe a partially updated map. The
-// chunked arena caps storage at 512 KiB per CUDA context in this host module.
-static inline void* TmaDeviceSlot(
-    const CUtensorMap& tm,
-    int device_id,
-    cudaStream_t stream) {
-  static std::mutex mu;
-  static auto* slots = new std::unordered_map<std::string, void*>();
-  static auto* arenas = new std::unordered_map<CUcontext, TmaDeviceArena>();
-
-  // Device allocations are context-owned. Resolve and validate the active
-  // context before cache lookup so a warm entry can never bypass the same
-  // checks as a cold entry or leak a pointer across contexts on one device.
-  CUcontext current_context = nullptr;
-  CUresult result = cuCtxGetCurrent(&current_context);
-  TVM_FFI_CHECK(result == CUDA_SUCCESS && current_context != nullptr, RuntimeError)
-      << "pointer TMA ABI requires an active CUDA context: CUresult="
-      << static_cast<int>(result);
-  CUdevice current_device = -1;
-  result = cuCtxGetDevice(&current_device);
-  TVM_FFI_CHECK(result == CUDA_SUCCESS && current_device == device_id, RuntimeError)
-      << "TMA descriptor device mismatch: current=" << current_device
-      << ", tensor=" << device_id;
-
-  std::string key =
-      std::to_string(reinterpret_cast<uintptr_t>(current_context));
-  key.push_back(':');
-  key.append(reinterpret_cast<const char*>(&tm), sizeof(CUtensorMap));
-  std::lock_guard<std::mutex> lock(mu);
-
-  // CUcontext is an opaque, recyclable handle.  Before trusting a warm arena,
-  // prove that its first allocation still belongs to this live context.  A
-  // destroyed context makes the pointer query fail; a subsequently reused
-  // handle must therefore discard the stale pointer and descriptor entries.
-  auto arena_it = arenas->find(current_context);
-  if (arena_it != arenas->end() && !arena_it->second.chunks.empty()) {
-    CUcontext allocation_context = nullptr;
-    result = cuPointerGetAttribute(
-        &allocation_context,
-        CU_POINTER_ATTRIBUTE_CONTEXT,
-        arena_it->second.chunks.front());
-    if (result != CUDA_SUCCESS || allocation_context != current_context) {
-      const std::string prefix =
-          std::to_string(reinterpret_cast<uintptr_t>(current_context)) + ":";
-      for (auto slot_it = slots->begin(); slot_it != slots->end();) {
-        if (slot_it->first.compare(0, prefix.size(), prefix) == 0) {
-          slot_it = slots->erase(slot_it);
-        } else {
-          ++slot_it;
-        }
-      }
-      arenas->erase(arena_it);
-    }
-  }
-
-  auto it = slots->find(key);
-  if (it != slots->end()) return it->second;
-
-  CUstreamCaptureStatus capture_status = CU_STREAM_CAPTURE_STATUS_NONE;
-  result = cuStreamIsCapturing(
-      reinterpret_cast<CUstream>(stream), &capture_status);
-  TVM_FFI_CHECK(result == CUDA_SUCCESS, RuntimeError)
-      << "cuStreamIsCapturing for TMA descriptor slot failed: CUresult="
-      << static_cast<int>(result);
-  TVM_FFI_CHECK(capture_status == CU_STREAM_CAPTURE_STATUS_NONE, RuntimeError)
-      << "pointer TMA ABI cannot create a new device descriptor slot inside "
-         "CUDA Graph capture; prewarm this exact tensor/layout binding or "
-         "compile with tma_abi='grid_constant'";
-
-  TmaDeviceArena& arena = (*arenas)[current_context];
-  TVM_FFI_CHECK(arena.used < TmaDeviceArena::kMaxSlots, RuntimeError)
-      << "pointer TMA ABI exhausted its immutable descriptor arena in CUDA "
-         "context " << current_context << " on device " << device_id
-      << " (capacity=" << TmaDeviceArena::kMaxSlots
-      << "); reuse tensor/layout bindings or compile with tma_abi='grid_constant'";
-  if (arena.used % TmaDeviceArena::kSlotsPerChunk == 0) {
-    CUdeviceptr chunk = 0;
-    result = cuMemAlloc(
-        &chunk,
-        TmaDeviceArena::kSlotsPerChunk * sizeof(CUtensorMap));
-    TVM_FFI_CHECK(result == CUDA_SUCCESS, RuntimeError)
-        << "cuMemAlloc for TMA descriptor arena failed: CUresult="
-        << static_cast<int>(result);
-    arena.chunks.push_back(chunk);
-  }
-  size_t chunk_index = arena.used / TmaDeviceArena::kSlotsPerChunk;
-  size_t slot_index = arena.used % TmaDeviceArena::kSlotsPerChunk;
-  CUdeviceptr dev = arena.chunks[chunk_index] +
-                    slot_index * sizeof(CUtensorMap);
-  result = cuMemcpyHtoD(dev, &tm, sizeof(CUtensorMap));
-  TVM_FFI_CHECK(result == CUDA_SUCCESS, RuntimeError)
-      << "cuMemcpyHtoD for TMA descriptor slot failed: CUresult="
-      << static_cast<int>(result);
-  ++arena.used;
-  void* pointer = reinterpret_cast<void*>(static_cast<uintptr_t>(dev));
-  (*slots)[key] = pointer;
-  return pointer;
-}
-
 // 4D TMA descriptor for buffer 'tmap_q' — compiled from the
 // descriptor's std.Expr global_dim/global_strides/checks record.
 inline CUtensorMap EncodeTma_tmap_q(const TensorView& t) {
@@ -430,33 +322,33 @@ inline CUtensorMap EncodeTma_tmap_q(const TensorView& t) {
   return tm;
 }
 
-// 2D TMA descriptor for buffer 'tmap_swa_kv' — compiled from the
+// 2D TMA descriptor for buffer 'tmap_swa_k' — compiled from the
 // descriptor's std.Expr global_dim/global_strides/checks record.
-inline CUtensorMap EncodeTma_tmap_swa_kv(const TensorView& t) {
+inline CUtensorMap EncodeTma_tmap_swa_k(const TensorView& t) {
   TVM_FFI_CHECK(t.ndim() >= 2, ValueError)
-      << "TMA source 'tmap_swa_kv' must have at least 2 dimensions, got ndim=" << t.ndim();
+      << "TMA source 'tmap_swa_k' must have at least 2 dimensions, got ndim=" << t.ndim();
   TVM_FFI_CHECK(t.stride(-1) == 1, ValueError)
-      << "TMA source 'tmap_swa_kv' must have unit innermost stride, got " << t.stride(-1);
+      << "TMA source 'tmap_swa_k' must have unit innermost stride, got " << t.stride(-1);
   int64_t d1 = t.size(t.ndim() - 1);
   TVM_FFI_CHECK(d1 > 0, ValueError)
-      << "TMA source 'tmap_swa_kv' trailing dims must be positive";
+      << "TMA source 'tmap_swa_k' trailing dims must be positive";
   int64_t outer1 = t.numel() / (d1);
-  CheckDenseLeadingFold(t, 1, "tmap_swa_kv");
+  CheckDenseLeadingFold(t, 1, "tmap_swa_k");
   int64_t s2 = t.stride(t.ndim() - 2) * 1;
   TVM_FFI_CHECK(s2 > 0, ValueError)
-      << "TMA source 'tmap_swa_kv' physical strides must be positive";
+      << "TMA source 'tmap_swa_k' physical strides must be positive";
   uint64_t global_dim[2] = {(uint64_t)(d1), (uint64_t)(outer1)};
   TVM_FFI_CHECK(global_dim[0] > 0 && global_dim[1] > 0, ValueError)
-      << "TMA descriptor for 'tmap_swa_kv' resolved a non-positive global dim";
+      << "TMA descriptor for 'tmap_swa_k' resolved a non-positive global dim";
   TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
-      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_swa_kv'";
+      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_swa_k'";
   int64_t carrier_stride_0 = s2;
   TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
-      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 negative";
+      << "TMA descriptor for 'tmap_swa_k' resolved global stride 1 negative";
   TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
-      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 zero while global dimension 1 is not 1";
+      << "TMA descriptor for 'tmap_swa_k' resolved global stride 1 zero while global dimension 1 is not 1";
   TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
-      << "TMA descriptor for 'tmap_swa_kv' resolved global stride 1 to a non-whole-byte offset";
+      << "TMA descriptor for 'tmap_swa_k' resolved global stride 1 to a non-whole-byte offset";
   uint64_t global_strides[1] = {
       (uint64_t)((carrier_stride_0 * 16) / 8),
   };
@@ -468,37 +360,37 @@ inline CUtensorMap EncodeTma_tmap_swa_kv(const TensorView& t) {
       CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
       CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
   TVM_FFI_CHECK(r == CUDA_SUCCESS, RuntimeError)
-      << "cuTensorMapEncodeTiled (2D, 'tmap_swa_kv') failed: CUresult=" << (int)r;
+      << "cuTensorMapEncodeTiled (2D, 'tmap_swa_k') failed: CUresult=" << (int)r;
   return tm;
 }
 
-// 2D TMA descriptor for buffer 'tmap_compressed_kv' — compiled from the
+// 2D TMA descriptor for buffer 'tmap_compressed_k' — compiled from the
 // descriptor's std.Expr global_dim/global_strides/checks record.
-inline CUtensorMap EncodeTma_tmap_compressed_kv(const TensorView& t) {
+inline CUtensorMap EncodeTma_tmap_compressed_k(const TensorView& t) {
   TVM_FFI_CHECK(t.ndim() >= 2, ValueError)
-      << "TMA source 'tmap_compressed_kv' must have at least 2 dimensions, got ndim=" << t.ndim();
+      << "TMA source 'tmap_compressed_k' must have at least 2 dimensions, got ndim=" << t.ndim();
   TVM_FFI_CHECK(t.stride(-1) == 1, ValueError)
-      << "TMA source 'tmap_compressed_kv' must have unit innermost stride, got " << t.stride(-1);
+      << "TMA source 'tmap_compressed_k' must have unit innermost stride, got " << t.stride(-1);
   int64_t d1 = t.size(t.ndim() - 1);
   TVM_FFI_CHECK(d1 > 0, ValueError)
-      << "TMA source 'tmap_compressed_kv' trailing dims must be positive";
+      << "TMA source 'tmap_compressed_k' trailing dims must be positive";
   int64_t outer1 = t.numel() / (d1);
-  CheckDenseLeadingFold(t, 1, "tmap_compressed_kv");
+  CheckDenseLeadingFold(t, 1, "tmap_compressed_k");
   int64_t s2 = t.stride(t.ndim() - 2) * 1;
   TVM_FFI_CHECK(s2 > 0, ValueError)
-      << "TMA source 'tmap_compressed_kv' physical strides must be positive";
+      << "TMA source 'tmap_compressed_k' physical strides must be positive";
   uint64_t global_dim[2] = {(uint64_t)(d1), (uint64_t)(outer1)};
   TVM_FFI_CHECK(global_dim[0] > 0 && global_dim[1] > 0, ValueError)
-      << "TMA descriptor for 'tmap_compressed_kv' resolved a non-positive global dim";
+      << "TMA descriptor for 'tmap_compressed_k' resolved a non-positive global dim";
   TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
-      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_compressed_kv'";
+      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_compressed_k'";
   int64_t carrier_stride_0 = s2;
   TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
-      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 negative";
+      << "TMA descriptor for 'tmap_compressed_k' resolved global stride 1 negative";
   TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
-      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 zero while global dimension 1 is not 1";
+      << "TMA descriptor for 'tmap_compressed_k' resolved global stride 1 zero while global dimension 1 is not 1";
   TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
-      << "TMA descriptor for 'tmap_compressed_kv' resolved global stride 1 to a non-whole-byte offset";
+      << "TMA descriptor for 'tmap_compressed_k' resolved global stride 1 to a non-whole-byte offset";
   uint64_t global_strides[1] = {
       (uint64_t)((carrier_stride_0 * 16) / 8),
   };
@@ -510,14 +402,98 @@ inline CUtensorMap EncodeTma_tmap_compressed_kv(const TensorView& t) {
       CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
       CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
   TVM_FFI_CHECK(r == CUDA_SUCCESS, RuntimeError)
-      << "cuTensorMapEncodeTiled (2D, 'tmap_compressed_kv') failed: CUresult=" << (int)r;
+      << "cuTensorMapEncodeTiled (2D, 'tmap_compressed_k') failed: CUresult=" << (int)r;
+  return tm;
+}
+
+// 2D TMA descriptor for buffer 'tmap_swa_v' — compiled from the
+// descriptor's std.Expr global_dim/global_strides/checks record.
+inline CUtensorMap EncodeTma_tmap_swa_v(const TensorView& t) {
+  TVM_FFI_CHECK(t.ndim() >= 2, ValueError)
+      << "TMA source 'tmap_swa_v' must have at least 2 dimensions, got ndim=" << t.ndim();
+  TVM_FFI_CHECK(t.stride(-1) == 1, ValueError)
+      << "TMA source 'tmap_swa_v' must have unit innermost stride, got " << t.stride(-1);
+  int64_t d1 = t.size(t.ndim() - 1);
+  TVM_FFI_CHECK(d1 > 0, ValueError)
+      << "TMA source 'tmap_swa_v' trailing dims must be positive";
+  int64_t outer1 = t.numel() / (d1);
+  CheckDenseLeadingFold(t, 1, "tmap_swa_v");
+  int64_t s2 = t.stride(t.ndim() - 2) * 1;
+  TVM_FFI_CHECK(s2 > 0, ValueError)
+      << "TMA source 'tmap_swa_v' physical strides must be positive";
+  uint64_t global_dim[2] = {(uint64_t)(d1), (uint64_t)(outer1)};
+  TVM_FFI_CHECK(global_dim[0] > 0 && global_dim[1] > 0, ValueError)
+      << "TMA descriptor for 'tmap_swa_v' resolved a non-positive global dim";
+  TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
+      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_swa_v'";
+  int64_t carrier_stride_0 = s2;
+  TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_swa_v' resolved global stride 1 negative";
+  TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
+      << "TMA descriptor for 'tmap_swa_v' resolved global stride 1 zero while global dimension 1 is not 1";
+  TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_swa_v' resolved global stride 1 to a non-whole-byte offset";
+  uint64_t global_strides[1] = {
+      (uint64_t)((carrier_stride_0 * 16) / 8),
+  };
+  uint32_t box_dim[2] = {64u, 1u};
+  uint32_t elem_strides[2] = {1u, 1u};
+  CUtensorMap tm{};
+  CUresult r = cuTensorMapEncodeTiled(
+      &tm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, t.data_ptr(), global_dim, global_strides, box_dim, elem_strides,
+      CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  TVM_FFI_CHECK(r == CUDA_SUCCESS, RuntimeError)
+      << "cuTensorMapEncodeTiled (2D, 'tmap_swa_v') failed: CUresult=" << (int)r;
+  return tm;
+}
+
+// 2D TMA descriptor for buffer 'tmap_compressed_v' — compiled from the
+// descriptor's std.Expr global_dim/global_strides/checks record.
+inline CUtensorMap EncodeTma_tmap_compressed_v(const TensorView& t) {
+  TVM_FFI_CHECK(t.ndim() >= 2, ValueError)
+      << "TMA source 'tmap_compressed_v' must have at least 2 dimensions, got ndim=" << t.ndim();
+  TVM_FFI_CHECK(t.stride(-1) == 1, ValueError)
+      << "TMA source 'tmap_compressed_v' must have unit innermost stride, got " << t.stride(-1);
+  int64_t d1 = t.size(t.ndim() - 1);
+  TVM_FFI_CHECK(d1 > 0, ValueError)
+      << "TMA source 'tmap_compressed_v' trailing dims must be positive";
+  int64_t outer1 = t.numel() / (d1);
+  CheckDenseLeadingFold(t, 1, "tmap_compressed_v");
+  int64_t s2 = t.stride(t.ndim() - 2) * 1;
+  TVM_FFI_CHECK(s2 > 0, ValueError)
+      << "TMA source 'tmap_compressed_v' physical strides must be positive";
+  uint64_t global_dim[2] = {(uint64_t)(d1), (uint64_t)(outer1)};
+  TVM_FFI_CHECK(global_dim[0] > 0 && global_dim[1] > 0, ValueError)
+      << "TMA descriptor for 'tmap_compressed_v' resolved a non-positive global dim";
+  TVM_FFI_CHECK(64u <= global_dim[0] && 1u <= global_dim[1], ValueError)
+      << "TMA box (64, 1) exceeds resolved global dims for 'tmap_compressed_v'";
+  int64_t carrier_stride_0 = s2;
+  TVM_FFI_CHECK(carrier_stride_0 >= 0, ValueError)
+      << "TMA descriptor for 'tmap_compressed_v' resolved global stride 1 negative";
+  TVM_FFI_CHECK(carrier_stride_0 != 0 || global_dim[1] == 1, ValueError)
+      << "TMA descriptor for 'tmap_compressed_v' resolved global stride 1 zero while global dimension 1 is not 1";
+  TVM_FFI_CHECK((carrier_stride_0 * 16) % 8 == 0, ValueError)
+      << "TMA descriptor for 'tmap_compressed_v' resolved global stride 1 to a non-whole-byte offset";
+  uint64_t global_strides[1] = {
+      (uint64_t)((carrier_stride_0 * 16) / 8),
+  };
+  uint32_t box_dim[2] = {64u, 1u};
+  uint32_t elem_strides[2] = {1u, 1u};
+  CUtensorMap tm{};
+  CUresult r = cuTensorMapEncodeTiled(
+      &tm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, t.data_ptr(), global_dim, global_strides, box_dim, elem_strides,
+      CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  TVM_FFI_CHECK(r == CUDA_SUCCESS, RuntimeError)
+      << "cuTensorMapEncodeTiled (2D, 'tmap_compressed_v') failed: CUresult=" << (int)r;
   return tm;
 }
 
 }  // namespace
 
 
-void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, TensorView arg_tmap_compressed_kv, TensorView arg_partial_O, TensorView arg_partial_lse, TensorView arg_sparse_indices, TensorView arg_sparse_topk_lens, TensorView arg_sinks, TensorView arg_bmm1_scale, TensorView arg_bmm2_scale, int64_t arg_num_heads, int64_t arg_sparse_topk, int64_t arg_num_splits, int64_t arg_has_sinks, int64_t grid_x, int64_t grid_y, int64_t grid_z, int64_t cuda_stream) {
+void Run_bf16_h128_prefill_v42(TensorView arg_tmap_q, TensorView arg_tmap_swa_k, TensorView arg_tmap_compressed_k, TensorView arg_tmap_swa_v, TensorView arg_tmap_compressed_v, TensorView arg_O, TensorView arg_partial_lse, TensorView arg_sparse_indices, TensorView arg_sparse_topk_lens, TensorView arg_sinks, TensorView arg_bmm1_scale, TensorView arg_bmm2_scale, int64_t arg_num_heads, int64_t arg_num_query_tokens, int64_t arg_sparse_topk, int64_t arg_has_sinks, int64_t arg_total_work_items, int64_t grid_x, int64_t grid_y, int64_t grid_z, int64_t cuda_stream) {
   TVM_FFI_CHECK(cuda_stream >= 0, ValueError)
       << "cuda_stream must be non-negative";
   cudaStream_t stream = reinterpret_cast<cudaStream_t>(
@@ -527,13 +503,17 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   CheckCudaTensor(arg_tmap_q, "tmap_q");
   CheckDtype(arg_tmap_q, "tmap_q", 4, 16, 1);
   CheckContiguous(arg_tmap_q, "tmap_q");
-  CheckCudaTensor(arg_tmap_swa_kv, "tmap_swa_kv");
-  CheckDtype(arg_tmap_swa_kv, "tmap_swa_kv", 4, 16, 1);
-  CheckCudaTensor(arg_tmap_compressed_kv, "tmap_compressed_kv");
-  CheckDtype(arg_tmap_compressed_kv, "tmap_compressed_kv", 4, 16, 1);
-  CheckCudaTensor(arg_partial_O, "partial_O");
-  CheckDtype(arg_partial_O, "partial_O", 4, 16, 1);
-  CheckContiguous(arg_partial_O, "partial_O");
+  CheckCudaTensor(arg_tmap_swa_k, "tmap_swa_k");
+  CheckDtype(arg_tmap_swa_k, "tmap_swa_k", 4, 16, 1);
+  CheckCudaTensor(arg_tmap_compressed_k, "tmap_compressed_k");
+  CheckDtype(arg_tmap_compressed_k, "tmap_compressed_k", 4, 16, 1);
+  CheckCudaTensor(arg_tmap_swa_v, "tmap_swa_v");
+  CheckDtype(arg_tmap_swa_v, "tmap_swa_v", 4, 16, 1);
+  CheckCudaTensor(arg_tmap_compressed_v, "tmap_compressed_v");
+  CheckDtype(arg_tmap_compressed_v, "tmap_compressed_v", 4, 16, 1);
+  CheckCudaTensor(arg_O, "O");
+  CheckDtype(arg_O, "O", 4, 16, 1);
+  CheckContiguous(arg_O, "O");
   CheckCudaTensor(arg_partial_lse, "partial_lse");
   CheckDtype(arg_partial_lse, "partial_lse", 2, 32, 1);
   CheckContiguous(arg_partial_lse, "partial_lse");
@@ -555,18 +535,23 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   TVM_FFI_CHECK(arg_num_heads >= -2147483648LL && arg_num_heads <= 2147483647LL, ValueError)
       << "scalar 'num_heads' value " << arg_num_heads
       << " is outside i32 range [-2147483648, 2147483647]";
+  TVM_FFI_CHECK(arg_num_query_tokens >= -2147483648LL && arg_num_query_tokens <= 2147483647LL, ValueError)
+      << "scalar 'num_query_tokens' value " << arg_num_query_tokens
+      << " is outside i32 range [-2147483648, 2147483647]";
   TVM_FFI_CHECK(arg_sparse_topk >= -2147483648LL && arg_sparse_topk <= 2147483647LL, ValueError)
       << "scalar 'sparse_topk' value " << arg_sparse_topk
-      << " is outside i32 range [-2147483648, 2147483647]";
-  TVM_FFI_CHECK(arg_num_splits >= -2147483648LL && arg_num_splits <= 2147483647LL, ValueError)
-      << "scalar 'num_splits' value " << arg_num_splits
       << " is outside i32 range [-2147483648, 2147483647]";
   TVM_FFI_CHECK(arg_has_sinks >= -2147483648LL && arg_has_sinks <= 2147483647LL, ValueError)
       << "scalar 'has_sinks' value " << arg_has_sinks
       << " is outside i32 range [-2147483648, 2147483647]";
-  CheckSameCudaDevice(arg_tmap_swa_kv, arg_tmap_q, "tmap_swa_kv", "tmap_q");
-  CheckSameCudaDevice(arg_tmap_compressed_kv, arg_tmap_q, "tmap_compressed_kv", "tmap_q");
-  CheckSameCudaDevice(arg_partial_O, arg_tmap_q, "partial_O", "tmap_q");
+  TVM_FFI_CHECK(arg_total_work_items >= -2147483648LL && arg_total_work_items <= 2147483647LL, ValueError)
+      << "scalar 'total_work_items' value " << arg_total_work_items
+      << " is outside i32 range [-2147483648, 2147483647]";
+  CheckSameCudaDevice(arg_tmap_swa_k, arg_tmap_q, "tmap_swa_k", "tmap_q");
+  CheckSameCudaDevice(arg_tmap_compressed_k, arg_tmap_q, "tmap_compressed_k", "tmap_q");
+  CheckSameCudaDevice(arg_tmap_swa_v, arg_tmap_q, "tmap_swa_v", "tmap_q");
+  CheckSameCudaDevice(arg_tmap_compressed_v, arg_tmap_q, "tmap_compressed_v", "tmap_q");
+  CheckSameCudaDevice(arg_O, arg_tmap_q, "O", "tmap_q");
   CheckSameCudaDevice(arg_partial_lse, arg_tmap_q, "partial_lse", "tmap_q");
   CheckSameCudaDevice(arg_sparse_indices, arg_tmap_q, "sparse_indices", "tmap_q");
   CheckSameCudaDevice(arg_sparse_topk_lens, arg_tmap_q, "sparse_topk_lens", "tmap_q");
@@ -582,13 +567,12 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
       << ") must be divisible by cluster dims (2, 1, 1)";
 
 
-  CUtensorMap h_tmap_q = EncodeTma_tmap_q(arg_tmap_q);
-  void* p_tmap_q = TmaDeviceSlot(h_tmap_q, arg_tmap_q.device().device_id, stream);
-  CUtensorMap h_tmap_swa_kv = EncodeTma_tmap_swa_kv(arg_tmap_swa_kv);
-  void* p_tmap_swa_kv = TmaDeviceSlot(h_tmap_swa_kv, arg_tmap_swa_kv.device().device_id, stream);
-  CUtensorMap h_tmap_compressed_kv = EncodeTma_tmap_compressed_kv(arg_tmap_compressed_kv);
-  void* p_tmap_compressed_kv = TmaDeviceSlot(h_tmap_compressed_kv, arg_tmap_compressed_kv.device().device_id, stream);
-  void* p_partial_O = arg_partial_O.data_ptr();
+  CUtensorMap p_tmap_q = EncodeTma_tmap_q(arg_tmap_q);
+  CUtensorMap p_tmap_swa_k = EncodeTma_tmap_swa_k(arg_tmap_swa_k);
+  CUtensorMap p_tmap_compressed_k = EncodeTma_tmap_compressed_k(arg_tmap_compressed_k);
+  CUtensorMap p_tmap_swa_v = EncodeTma_tmap_swa_v(arg_tmap_swa_v);
+  CUtensorMap p_tmap_compressed_v = EncodeTma_tmap_compressed_v(arg_tmap_compressed_v);
+  void* p_O = arg_O.data_ptr();
   void* p_partial_lse = arg_partial_lse.data_ptr();
   void* p_sparse_indices = arg_sparse_indices.data_ptr();
   void* p_sparse_topk_lens = arg_sparse_topk_lens.data_ptr();
@@ -596,24 +580,25 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   void* p_bmm1_scale = arg_bmm1_scale.data_ptr();
   void* p_bmm2_scale = arg_bmm2_scale.data_ptr();
   int32_t v_num_heads = (int32_t)arg_num_heads;
+  int32_t v_num_query_tokens = (int32_t)arg_num_query_tokens;
   int32_t v_sparse_topk = (int32_t)arg_sparse_topk;
-  int32_t v_num_splits = (int32_t)arg_num_splits;
   int32_t v_has_sinks = (int32_t)arg_has_sinks;
-  void* kargs[] = {&p_tmap_q, &p_tmap_swa_kv, &p_tmap_compressed_kv, &p_partial_O, &p_partial_lse, &p_sparse_indices, &p_sparse_topk_lens, &p_sinks, &p_bmm1_scale, &p_bmm2_scale, &v_num_heads, &v_sparse_topk, &v_num_splits, &v_has_sinks};
+  int32_t v_total_work_items = (int32_t)arg_total_work_items;
+  void* kargs[] = {&p_tmap_q, &p_tmap_swa_k, &p_tmap_compressed_k, &p_tmap_swa_v, &p_tmap_compressed_v, &p_O, &p_partial_lse, &p_sparse_indices, &p_sparse_topk_lens, &p_sinks, &p_bmm1_scale, &p_bmm2_scale, &v_num_heads, &v_num_query_tokens, &v_sparse_topk, &v_has_sinks, &v_total_work_items};
 
   dim3 grid((uint32_t)grid_x, (uint32_t)grid_y, (uint32_t)grid_z);
-  dim3 block(416u, 1u, 1u);
+  dim3 block(512u, 1u, 1u);
   cudaError_t status = cudaSuccess;
-  status = cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h64_fixed_q,
+  status = cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h128_prefill_v42,
       cudaFuncAttributeMaxDynamicSharedMemorySize,
-      215168);
+      219648);
   TVM_FFI_CHECK(status == cudaSuccess, RuntimeError)
-      << "cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h64_fixed_q) failed: "
+      << "cudaFuncSetAttribute(kernel_cake_dsv4_bf16_h128_prefill_v42) failed: "
       << cudaGetErrorString(status);
   cudaLaunchConfig_t config = {};
   config.gridDim = grid;
   config.blockDim = block;
-  config.dynamicSmemBytes = 215168u;
+  config.dynamicSmemBytes = 219648u;
   config.stream = stream;
   cudaLaunchAttribute attrs[1] = {};
   attrs[0].id = cudaLaunchAttributeClusterDimension;
@@ -623,13 +608,13 @@ void Run_bf16_h64_fixed_q(TensorView arg_tmap_q, TensorView arg_tmap_swa_kv, Ten
   config.attrs = attrs;
   config.numAttrs = 1;
   status = cudaLaunchKernelExC(
-      &config, reinterpret_cast<const void*>(kernel_cake_dsv4_bf16_h64_fixed_q), kargs);
+      &config, reinterpret_cast<const void*>(kernel_cake_dsv4_bf16_h128_prefill_v42), kargs);
   TVM_FFI_CHECK(status == cudaSuccess, RuntimeError)
-      << "kernel_cake_dsv4_bf16_h64_fixed_q launch failed: " << cudaGetErrorString(status);
+      << "kernel_cake_dsv4_bf16_h128_prefill_v42 launch failed: " << cudaGetErrorString(status);
 }
 
 
 }  // namespace flashinfer::cake_dsv4
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(
-    run_bf16_h64_fixed_q, flashinfer::cake_dsv4::Run_bf16_h64_fixed_q);
+    run_bf16_h128_prefill_v42, flashinfer::cake_dsv4::Run_bf16_h128_prefill_v42);

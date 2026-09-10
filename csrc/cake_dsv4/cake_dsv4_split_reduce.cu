@@ -1,14 +1,30 @@
+typedef signed char        int8_t;
 typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;
 typedef unsigned int       uint32_t;
+#if defined(__CUDACC_RTC__)
 typedef unsigned long long uint64_t;
+#else
+typedef unsigned long      uint64_t;
+#endif
+static_assert(sizeof(uint64_t) == 8, "Cake requires an LP64 CUDA host ABI");
 typedef signed int         int32_t;
 typedef short int          int16_t;
 struct __align__(128) CakeTensorMap { uint64_t opaque[16]; };
+struct __align__(64) CakeTensorMap64 { uint64_t opaque[16]; };
+static_assert(sizeof(CakeTensorMap64) == 128, "64-aligned tensor-map ABI size");
+static_assert(alignof(CakeTensorMap64) == 64, "64-aligned tensor-map ABI alignment");
 
-typedef struct __align__(64) { uint64_t opaque[16]; } CUtensorMap;
+#if defined(__CUDACC_RTC__)
+typedef struct __align__(128) { uint64_t opaque[16]; } CUtensorMap;
+#else
+#include <cuda.h>
+#endif
 
+static_assert(sizeof(CUtensorMap) == 128, "CUtensorMap CUDA ABI must be 128 bytes");
+static_assert(alignof(CUtensorMap) == 128, "CUtensorMap CUDA ABI must be 128-byte aligned");
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 
 __device__ __forceinline__ int make_warp_uniform(int x) {
     int result;
@@ -54,8 +70,9 @@ __global__ __launch_bounds__(128) void
 kernel_cake_dsv4_split_reduce(__nv_bfloat16* __restrict__ partial_O, float* __restrict__ partial_lse, __nv_bfloat16* __restrict__ O, int num_q_heads, int num_split)
 {
     const int tid = threadIdx.x;
-    const int warp = make_warp_uniform(tid / 32);
-    const int lane = tid % 32;
+    const uint32_t warp = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
+    uint32_t lane;
+    asm("mov.u32 %0, %%laneid;" : "=r"(lane));
 
     extern __shared__ __align__(1024) char smem_raw[];
     int smem;
@@ -79,7 +96,7 @@ kernel_cake_dsv4_split_reduce(__nv_bfloat16* __restrict__ partial_O, float* __re
         float thread_max = -CAKE_INF;
         #pragma unroll
         for (int i = 0; i < 8; i++) {
-            int split_idx = lane + i * 32;
+            int split_idx = lane + (unsigned int)(i * 32);
             local_m[i] = -CAKE_INF;
             local_w[i] = 0.0f;
             if (split_idx < num_split) {
@@ -96,7 +113,7 @@ kernel_cake_dsv4_split_reduce(__nv_bfloat16* __restrict__ partial_O, float* __re
         float thread_sum = 0.0f;
         #pragma unroll
         for (int i_1 = 0; i_1 < 8; i_1++) {
-            int split_idx_1 = lane + i_1 * 32;
+            int split_idx_1 = lane + (unsigned int)(i_1 * 32);
             if (split_idx_1 < num_split) {
                 float _exp2_0 = approx_exp2(local_m[i_1] - global_max);
                 local_w[i_1] = ((local_m[i_1] == -CAKE_INF) ? 0.0f : _exp2_0);
@@ -112,7 +129,7 @@ kernel_cake_dsv4_split_reduce(__nv_bfloat16* __restrict__ partial_O, float* __re
         float inv_sum = ((global_sum > 0.0f) ? _rcp_0 : 0.0f);
         #pragma unroll
         for (int i_2 = 0; i_2 < 8; i_2++) {
-            int split_idx_2 = lane + i_2 * 32;
+            int split_idx_2 = lane + (unsigned int)(i_2 * 32);
             if (split_idx_2 < num_split) {
                 split_weights[split_idx_2] = local_w[i_2] * inv_sum;
             }
@@ -132,7 +149,8 @@ kernel_cake_dsv4_split_reduce(__nv_bfloat16* __restrict__ partial_O, float* __re
         float split_weight = split_weights[s];
         float _vec_load_0[4];
         {
-            uint2 _vld_0 = *reinterpret_cast<const uint2*>(partial_O + (po_head_base + s * 512 + d_base) + 0);
+            uint2 _vld_0;
+            _vld_0 = *reinterpret_cast<const uint2*>(partial_O + (po_head_base + s * 512 + d_base) + 0);
             uint32_t* _vpairs_0 = reinterpret_cast<uint32_t*>(&_vld_0);
             #pragma unroll
             for (int _pair = 0; _pair < 2; _pair++) {

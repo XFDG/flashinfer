@@ -10,7 +10,9 @@ from . import env as jit_env
 from .core import JitSpec, gen_jit_spec, logger, sm103a_nvcc_flags
 
 
-CakeDSV4Module = Literal["pointer", "pointer_uumn", "grid_constant"]
+CakeDSV4Module = Literal[
+    "pointer", "pointer_uumn", "grid_constant", "grid_constant_no_uumn"
+]
 
 _CAKE_DSV4_VARIANTS = {
     "pointer": (
@@ -21,19 +23,34 @@ _CAKE_DSV4_VARIANTS = {
         "bf16_h64_fixed_q",
         "bf16_h64_fixed_q_reduce",
         "bf16_h128_swa128",
-        "bf16_h128_topk128x",
-        "bf16_h128_topk128x_reduce",
         "bf16_swa128_single_cta",
-        "fp8_lowhead_decode",
         "fp8_lowhead_prefill",
+        "bf16_h8_swa128_v42",
+        "bf16_h16_h32_swa128_v41",
+        "bf16_h8_h16_source_exact",
+        "bf16_h32_topk4x_v38",
+        "bf16_h32_topk128x_v40",
+        "fp8_lowhead_swa",
     ),
-    "pointer_uumn": ("bf16_h64_prefill",),
+    "pointer_uumn": ("bf16_h64_prefill", "bf16_h64_guard_single_tile_r23"),
     "grid_constant": (
-        "bf16_h128_prefill",
+        "bf16_h128_prefill_v42",
+        "bf16_h128_topk128x",
         "bf16_h128_topk4x",
         "fp8_h128",
-        "split_reduce",
+        "fp8_h128_prefill_source_persistent",
+        "fp8_lowhead_one_partition",
+        "fp8_lowhead_split",
+        "fp8_lowhead_h64",
     ),
+    # H64 prefill and the shared reducer retain their measured ptxas defaults.
+    "grid_constant_no_uumn": ("fp8_h64_source_exact", "split_reduce"),
+}
+
+_CAKE_DSV4_VARIANT_MODULE = {
+    variant: module
+    for module, variants in _CAKE_DSV4_VARIANTS.items()
+    for variant in variants
 }
 
 

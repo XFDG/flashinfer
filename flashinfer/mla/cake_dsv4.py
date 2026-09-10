@@ -14,10 +14,16 @@ _scale_cache: dict[tuple[int, float], torch.Tensor] = {}
 _scale_cache_lock = threading.Lock()
 
 
-def _module(kind: Literal["pointer", "pointer_uumn", "grid_constant"]):
+def _module(kind: str):
     from ..jit.cake_dsv4 import get_cake_dsv4_module
 
     return get_cake_dsv4_module(kind)
+
+
+def _variant_module(variant: str):
+    from ..jit.cake_dsv4 import _CAKE_DSV4_VARIANT_MODULE
+
+    return _module(_CAKE_DSV4_VARIANT_MODULE[variant])
 
 
 def _stream_ptr(device: torch.device) -> int:
@@ -181,32 +187,146 @@ def _route(
     max_q_len: int,
     ragged: bool,
     sparse_topk: int,
+    batch_size: int,
+    compressed_page_size: int,
 ) -> str:
+    if max_q_len <= 0:
+        raise ValueError("max_q_len must be positive")
+    is_swa = sparse_topk == 128
+    is_topk4x = not is_swa and compressed_page_size == 64
+    is_topk128x = not is_swa and compressed_page_size == 2
     if dtype == torch.float8_e4m3fn:
         if num_heads == 128:
+            if (
+                batch_size == 2 and max_q_len == 257 and ragged
+                and is_topk4x and sparse_topk == 1152
+            ):
+                return "fp8_h128_prefill_source_persistent"
             return "fp8_h128"
         if num_heads not in (8, 16, 32, 64):
             raise ValueError(f"unsupported CAKE FP8 DSv4 head count: {num_heads}")
-        return "fp8_lowhead_prefill" if max_q_len >= 257 else "fp8_lowhead_decode"
+        if (
+            num_heads == 64 and batch_size == 2 and max_q_len == 257 and ragged
+            and is_topk4x and sparse_topk == 640
+        ):
+            return "fp8_h64_source_exact"
+        if max_q_len >= 257:
+            return "fp8_lowhead_prefill"
+        if is_swa:
+            return "fp8_lowhead_swa"
+        if num_heads == 64:
+            return "fp8_lowhead_h64"
+        return "fp8_lowhead_one_partition" if sparse_topk <= 256 else "fp8_lowhead_split"
     if dtype != torch.bfloat16:
         raise ValueError(f"unsupported CAKE DSv4 dtype: {dtype}")
-    if num_heads in (8, 16, 32):
+    if (
+        num_heads in (8, 16) and batch_size == 3 and max_q_len == 5 and ragged
+        and (
+            (is_topk128x and sparse_topk == 260)
+            or (is_topk4x and sparse_topk == (192 if num_heads == 8 else 256))
+        )
+    ):
+        return "bf16_h8_h16_source_exact"
+    if num_heads in (8, 16):
+        if is_swa:
+            return "bf16_h8_swa128_v42" if num_heads == 8 else "bf16_h16_h32_swa128_v41"
         return "bf16_h8_h32"
+    if num_heads == 32:
+        if is_swa:
+            return "bf16_h16_h32_swa128_v41"
+        if is_topk4x:
+            return "bf16_h32_topk4x_v38"
+        if is_topk128x:
+            return "bf16_h32_topk128x_v40"
+        raise ValueError("BF16 H32 compressed cache requires page size 64 or 2")
     if num_heads == 64:
         if not ragged:
             return "bf16_h64_fixed_q"
         if max_q_len >= 257:
             return "bf16_h64_prefill"
-        return "bf16_swa128_single_cta" if sparse_topk == 128 else "bf16_h64_compressed"
+        if is_swa:
+            return "bf16_h64_guard_single_tile_r23" if max_q_len > 5 else "bf16_swa128_single_cta"
+        return "bf16_h64_compressed"
     if num_heads == 128:
         if max_q_len >= 257:
-            return "bf16_h128_prefill"
-        if sparse_topk == 128:
+            return "bf16_h128_prefill_v42"
+        if is_swa:
             return "bf16_h128_swa128"
-        if sparse_topk == 1152:
+        if is_topk4x and sparse_topk == 1152:
             return "bf16_h128_topk4x"
         return "bf16_h128_topk128x"
     raise ValueError(f"unsupported CAKE BF16 DSv4 head count: {num_heads}")
+
+
+
+def _launch_variant(variant: str, *args, grid: tuple[int, int, int], stream: int):
+    """Launch one generated binding with its declared compilation flags."""
+    return getattr(_variant_module(variant), f"run_{variant}")(*args, *grid, stream)
+
+
+def _partition_workspace(workspace, out, num_query_tokens, num_heads, num_splits):
+    lse_elems = num_query_tokens * num_heads * num_splits
+    if num_splits == 1:
+        return out.reshape(-1), _direct_lse(workspace, lse_elems)
+    return _workspace_views(
+        workspace,
+        partial_o_elems=lse_elems * _HEAD_DIM,
+        partial_lse_elems=lse_elems,
+    )
+
+
+def _workspace_state(workspace: torch.Tensor) -> dict:
+    state = getattr(workspace, "_cake_dsv4_state", None)
+    if state is None:
+        state = {}
+        workspace._cake_dsv4_state = state
+    return state
+
+
+def _partition_arrivals(workspace, variant, merge_groups, num_splits):
+    # The producer increments these counters and consumes successive generations.
+    # Keep their lifetime with the caller's workspace, as for partial O/LSE.
+    state = _workspace_state(workspace)
+    key = (variant, merge_groups, num_splits)
+    counters = state.get(key)
+    if counters is None:
+        counters = [
+            torch.zeros(merge_groups, dtype=torch.uint32, device=workspace.device),
+            0,
+        ]
+        state[key] = counters
+    completion_base = counters[1]
+    counters[1] += num_splits
+    return counters[0], completion_base
+
+
+def _padded_sparse_indices(workspace, indices):
+    # The last query needs backing storage through the fixed 1152-entry staging
+    # envelope. Only the live sparse prefix participates in the computation.
+    rows, width = indices.shape
+    flat = indices.reshape(-1)
+    required = (rows - 1) * width + 1152
+    if flat.numel() >= required:
+        return flat
+    state = _workspace_state(workspace)
+    key = ("sparse_index_tail", rows, width)
+    padded = state.get(key)
+    if padded is None:
+        padded = torch.full(
+            (required,), -1, dtype=torch.int32, device=indices.device
+        )
+        state[key] = padded
+    # Public callers may update indices in place between calls.
+    padded[: flat.numel()].copy_(flat)
+    return padded
+
+
+def _launch_shared_reduce(partial_o, partial_lse, out, num_query_tokens,
+                          num_heads, num_splits, stream):
+    _launch_variant(
+        "split_reduce", partial_o, partial_lse, out, num_heads, num_splits,
+        grid=(num_query_tokens, num_heads, 1), stream=stream,
+    )
 
 
 def run_cake_dsv4(
@@ -223,6 +343,7 @@ def run_cake_dsv4(
     sinks: torch.Tensor | None,
     max_q_len: int,
     cum_seq_lens_q: torch.Tensor | None,
+    seq_lens: torch.Tensor,
     backend: Literal["cake"],
 ) -> torch.Tensor:
     if backend != "cake":
@@ -230,282 +351,199 @@ def run_cake_dsv4(
     num_query_tokens, num_heads, head_dim = query.shape
     if head_dim != _HEAD_DIM:
         raise ValueError(f"CAKE DSv4 requires head dim {_HEAD_DIM}, got {head_dim}")
+    batch_size = seq_lens.numel()
+    ragged = cum_seq_lens_q is not None
     query = query.contiguous()
     indices = sparse_indices.reshape(num_query_tokens, -1).contiguous()
     active_lens = sparse_topk_lens.reshape(-1).contiguous()
+    sparse_topk = indices.shape[1]
     swa = swa_kv_cache.reshape(-1, _HEAD_DIM).contiguous()
     compressed = compressed_kv_cache.reshape(-1, _HEAD_DIM).contiguous()
+    seq_lens = seq_lens.reshape(-1).contiguous()
+    if cum_seq_lens_q is not None:
+        cum_seq_lens_q = cum_seq_lens_q.reshape(-1).contiguous()
     out_rows = out.reshape(num_query_tokens, num_heads, _HEAD_DIM)
     scale1 = _device_scale(bmm1_scale, device=query.device, name="bmm1_scale")
     scale2 = _device_scale(bmm2_scale, device=query.device, name="bmm2_scale")
-    has_sinks = sinks is not None
+    has_sinks = int(sinks is not None)
     sink_tensor = sinks if sinks is not None else scale1
     route = _route(
-        dtype=query.dtype,
-        num_heads=num_heads,
-        max_q_len=max_q_len,
-        ragged=cum_seq_lens_q is not None,
-        sparse_topk=indices.shape[1],
+        dtype=query.dtype, num_heads=num_heads, max_q_len=max_q_len,
+        ragged=ragged, sparse_topk=sparse_topk, batch_size=batch_size,
+        compressed_page_size=compressed_kv_cache.shape[-2],
     )
     stream = _stream_ptr(query.device)
-    pointer = _module("pointer_uumn" if route == "bf16_h64_prefill" else "pointer")
 
     if route == "bf16_h8_h32":
+        # Retain the general low-head path outside the specialized profiles.
         _run_bf16_split(
-            module=pointer,
-            variant=route,
-            reducer="bf16_h8_h32_reduce",
-            query=query,
-            swa=swa,
-            compressed=compressed,
-            workspace=workspace_buffer,
-            indices=indices,
-            active_lens=active_lens,
-            sinks=sink_tensor,
-            bmm1_scale=scale1,
-            bmm2_scale=scale2,
-            out=out_rows,
-            num_heads=num_heads,
-            with_head_tiles=False,
-            stream=stream,
+            module=_variant_module(route), variant=route,
+            reducer="bf16_h8_h32_reduce", query=query, swa=swa,
+            compressed=compressed, workspace=workspace_buffer, indices=indices,
+            active_lens=active_lens, sinks=sink_tensor, bmm1_scale=scale1,
+            bmm2_scale=scale2, out=out_rows, num_heads=num_heads,
+            with_head_tiles=False, stream=stream,
+        )
+        return out
+
+    if route in (
+        "bf16_swa128_single_cta", "bf16_h128_swa128",
+        "bf16_h8_swa128_v42", "bf16_h16_h32_swa128_v41",
+    ):
+        head_tiles = (num_heads + 63) // 64 if route == "bf16_h128_swa128" else 1
+        scalars = (num_heads, head_tiles, has_sinks) if route == "bf16_h128_swa128" else (num_heads, has_sinks)
+        _launch_variant(
+            route, query, swa, out_rows, indices, active_lens, sink_tensor,
+            scale1, scale2, *scalars,
+            grid=(num_query_tokens * head_tiles * 4, 1, 1), stream=stream,
+        )
+        return out
+
+    if route == "bf16_h8_h16_source_exact":
+        _launch_variant(
+            route, query, swa, compressed, out_rows, indices, active_lens,
+            seq_lens, cum_seq_lens_q, sink_tensor, scale1, scale2,
+            sparse_topk, max_q_len, batch_size, has_sinks,
+            grid=(max_q_len, (num_heads // 8) * 4, batch_size), stream=stream,
+        )
+        return out
+
+    if route == "bf16_h64_guard_single_tile_r23":
+        _launch_variant(
+            route, query, swa, compressed, out_rows, indices, active_lens,
+            seq_lens, cum_seq_lens_q, sink_tensor, scale1, scale2,
+            num_heads, sparse_topk, batch_size, max_q_len, int(ragged), has_sinks,
+            grid=(num_query_tokens, 1, 1), stream=stream,
         )
         return out
 
     if route in ("bf16_h64_compressed", "bf16_h64_fixed_q"):
-        _run_bf16_split(
-            module=pointer,
-            variant=route,
-            reducer=f"{route}_reduce",
-            query=query,
-            swa=swa,
-            compressed=compressed,
-            workspace=workspace_buffer,
-            indices=indices,
-            active_lens=active_lens,
-            sinks=sink_tensor,
-            bmm1_scale=scale1,
-            bmm2_scale=scale2,
-            out=out_rows,
-            num_heads=num_heads,
-            with_head_tiles=False,
-            stream=stream,
+        num_splits = (sparse_topk + 127) // 128
+        partial_o, partial_lse = _partition_workspace(
+            workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
         )
+        _launch_variant(
+            route, query, swa, compressed, partial_o, partial_lse, indices,
+            active_lens, sink_tensor, scale1, scale2, num_heads, sparse_topk,
+            num_splits, has_sinks,
+            grid=(num_query_tokens * num_splits * 2, 1, 1), stream=stream,
+        )
+        if num_splits > 1:
+            _launch_variant(
+                f"{route}_reduce", partial_o, partial_lse, out_rows,
+                num_heads, num_splits,
+                grid=(num_query_tokens, num_heads, 1), stream=stream,
+            )
         return out
 
-    if route == "bf16_h128_topk128x":
-        _run_bf16_split(
-            module=pointer,
-            variant=route,
-            reducer="bf16_h128_topk128x_reduce",
-            query=query,
-            swa=swa,
-            compressed=compressed,
-            workspace=workspace_buffer,
-            indices=indices,
-            active_lens=active_lens,
-            sinks=sink_tensor,
-            bmm1_scale=scale1,
-            bmm2_scale=scale2,
-            out=out_rows,
-            num_heads=num_heads,
-            with_head_tiles=True,
-            stream=stream,
+    if route in ("bf16_h32_topk4x_v38", "bf16_h32_topk128x_v40"):
+        num_splits = (sparse_topk + 127) // 128
+        head_tiles = (num_heads + 7) // 8
+        partial_o, partial_lse = _partition_workspace(
+            workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
         )
-        return out
-
-    if route in ("bf16_swa128_single_cta", "bf16_h128_swa128"):
-        scalars: tuple[int, ...]
-        if route == "bf16_swa128_single_cta":
-            scalars = (num_heads, int(has_sinks))
-            grid_x = num_query_tokens * 4
-        else:
-            scalars = (num_heads, 2, int(has_sinks))
-            grid_x = num_query_tokens * 8
-        getattr(pointer, f"run_{route}")(
-            query,
-            swa,
-            out_rows,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            *scalars,
-            grid_x,
-            1,
-            1,
-            stream,
+        arrivals, completion_base = _partition_arrivals(
+            workspace_buffer, route, num_query_tokens * head_tiles, num_splits
+        )
+        _launch_variant(
+            route, query, swa, compressed, partial_o, partial_lse, out_rows,
+            arrivals, indices, active_lens, sink_tensor, scale1, scale2,
+            num_heads, sparse_topk, num_splits, head_tiles, has_sinks,
+            completion_base,
+            grid=(num_query_tokens * num_splits * head_tiles, 1, 1), stream=stream,
         )
         return out
 
     if route == "bf16_h64_prefill":
-        pointer.run_bf16_h64_prefill(
-            query,
-            swa,
-            compressed,
-            out_rows,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            num_heads,
-            indices.shape[1],
-            int(has_sinks),
-            num_query_tokens,
-            1,
-            1,
-            stream,
+        _launch_variant(
+            route, query, swa, compressed, out_rows, indices, active_lens,
+            sink_tensor, scale1, scale2, num_heads, sparse_topk,
+            num_query_tokens, has_sinks,
+            grid=(num_query_tokens, 1, 1), stream=stream,
         )
         return out
 
-    if route in ("fp8_lowhead_decode", "fp8_lowhead_prefill"):
-        query_u8 = query.view(torch.uint8)
-        swa_u8 = swa.view(torch.uint8)
-        compressed_u8 = compressed.view(torch.uint8)
-        lse = _direct_lse(workspace_buffer, num_query_tokens * num_heads)
-        cluster = 2 if route == "fp8_lowhead_decode" else 1
-        total_work_items = num_query_tokens * 2
-        getattr(pointer, f"run_{route}")(
-            query_u8,
-            swa_u8,
-            compressed_u8,
-            out_rows,
-            lse,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            num_heads,
-            num_query_tokens,
-            indices.shape[1],
-            int(has_sinks),
-            total_work_items,
-            total_work_items * cluster,
-            1,
-            1,
-            stream,
+    if route in ("bf16_h128_topk128x", "bf16_h128_topk4x", "bf16_h128_prefill_v42"):
+        num_splits = 3 if route == "bf16_h128_topk4x" else 1
+        partial_o, partial_lse = _partition_workspace(
+            workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
+        )
+        packed_indices = _padded_sparse_indices(workspace_buffer, indices) if route == "bf16_h128_topk128x" else indices
+        total_work_items = num_query_tokens * num_splits
+        _launch_variant(
+            route, query, swa, compressed, swa, compressed, partial_o,
+            partial_lse, packed_indices, active_lens, sink_tensor, scale1, scale2,
+            num_heads, num_query_tokens, sparse_topk, has_sinks, total_work_items,
+            grid=(total_work_items * 2, 1, 1), stream=stream,
+        )
+        if num_splits > 1:
+            _launch_shared_reduce(partial_o, partial_lse, out_rows,
+                                  num_query_tokens, num_heads, num_splits, stream)
+        return out
+
+    query_u8 = query.view(torch.uint8)
+    swa_u8 = swa.view(torch.uint8)
+    compressed_u8 = compressed.view(torch.uint8)
+
+    if route == "fp8_h64_source_exact":
+        head_tiles = (num_heads + 63) // 64
+        total_work_items = max_q_len * head_tiles * batch_size
+        _launch_variant(
+            route, query_u8, swa_u8, compressed_u8, out_rows, cum_seq_lens_q,
+            indices, active_lens, sink_tensor, scale1, scale2, num_heads,
+            sparse_topk, has_sinks, total_work_items,
+            grid=(max_q_len, head_tiles, batch_size), stream=stream,
         )
         return out
 
-    grid_module = _module("grid_constant")
-    if route == "bf16_h128_prefill":
-        grid_module.run_bf16_h128_prefill(
-            query,
-            swa,
-            compressed,
-            swa,
-            compressed,
-            out_rows,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            num_heads,
-            num_query_tokens,
-            indices.shape[1],
-            int(has_sinks),
-            num_query_tokens,
-            num_query_tokens * 2,
-            1,
-            1,
-            stream,
-        )
-        return out
-
-    if route == "bf16_h128_topk4x":
-        num_splits = 3
-        total_work_items = num_query_tokens * num_splits * 2
-        lse_elems = num_query_tokens * num_heads * num_splits
-        partial_o, partial_lse = _workspace_views(
-            workspace_buffer,
-            partial_o_elems=lse_elems * _HEAD_DIM,
-            partial_lse_elems=lse_elems,
-        )
-        grid_module.run_bf16_h128_topk4x(
-            query,
-            swa,
-            compressed,
-            partial_o,
-            partial_lse,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            num_heads,
-            num_query_tokens,
-            indices.shape[1],
-            int(has_sinks),
-            total_work_items,
-            num_splits,
-            total_work_items * 2,
-            1,
-            1,
-            stream,
-        )
-        _reduce(
-            grid_module,
-            "split_reduce",
-            partial_o,
-            partial_lse,
-            out_rows,
-            num_query_tokens,
-            num_heads,
-            num_splits,
-            stream,
+    if route == "fp8_h128_prefill_source_persistent":
+        _launch_variant(
+            route, query_u8, swa_u8, compressed_u8, out_rows.reshape(-1),
+            _direct_lse(workspace_buffer, 1), indices, active_lens,
+            seq_lens, cum_seq_lens_q, sink_tensor, scale1, scale2,
+            num_heads, num_query_tokens, sparse_topk, has_sinks,
+            num_query_tokens, max_q_len, batch_size,
+            grid=(max_q_len * 2, 1, batch_size), stream=stream,
         )
         return out
 
     if route == "fp8_h128":
-        num_splits = 4 if indices.shape[1] > 128 and num_query_tokens < 257 else 1
-        lse_elems = num_query_tokens * num_heads * num_splits
-        if num_splits == 1:
-            partial_o = out_rows.reshape(-1)
-            partial_lse = _direct_lse(workspace_buffer, lse_elems)
-        else:
-            partial_o, partial_lse = _workspace_views(
-                workspace_buffer,
-                partial_o_elems=lse_elems * _HEAD_DIM,
-                partial_lse_elems=lse_elems,
-            )
+        num_splits = 5 if sparse_topk > 128 and num_query_tokens < 128 else 1
+        partial_o, partial_lse = _partition_workspace(
+            workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
+        )
         total_work_items = num_query_tokens * num_splits
-        grid_module.run_fp8_h128(
-            query.view(torch.uint8),
-            swa.view(torch.uint8),
-            compressed.view(torch.uint8),
-            partial_o,
-            partial_lse,
-            indices,
-            active_lens,
-            sink_tensor,
-            scale1,
-            scale2,
-            num_heads,
-            num_query_tokens,
-            indices.shape[1],
-            int(has_sinks),
-            total_work_items,
-            num_splits,
-            total_work_items * 2,
-            1,
-            1,
-            stream,
+        _launch_variant(
+            route, query_u8, swa_u8, compressed_u8, partial_o, partial_lse,
+            indices, active_lens, sink_tensor, scale1, scale2, num_heads,
+            num_query_tokens, sparse_topk, has_sinks, total_work_items, num_splits,
+            grid=(total_work_items * 2, 1, 1), stream=stream,
         )
         if num_splits > 1:
-            _reduce(
-                grid_module,
-                "split_reduce",
-                partial_o,
-                partial_lse,
-                out_rows,
-                num_query_tokens,
-                num_heads,
-                num_splits,
-                stream,
-            )
+            _launch_shared_reduce(partial_o, partial_lse, out_rows,
+                                  num_query_tokens, num_heads, num_splits, stream)
+        return out
+
+    if route in (
+        "fp8_lowhead_swa", "fp8_lowhead_one_partition", "fp8_lowhead_split",
+        "fp8_lowhead_h64", "fp8_lowhead_prefill",
+    ):
+        num_splits = 2 if route == "fp8_lowhead_split" else 1
+        partial_o, partial_lse = _partition_workspace(
+            workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
+        )
+        work_factor = 2 if route in ("fp8_lowhead_swa", "fp8_lowhead_prefill") else num_splits
+        total_work_items = num_query_tokens * work_factor
+        cluster = 1 if route == "fp8_lowhead_prefill" else 2
+        _launch_variant(
+            route, query_u8, swa_u8, compressed_u8, partial_o, partial_lse,
+            indices, active_lens, sink_tensor, scale1, scale2, num_heads,
+            num_query_tokens, sparse_topk, has_sinks, total_work_items,
+            grid=(total_work_items * cluster, 1, 1), stream=stream,
+        )
+        if num_splits > 1:
+            _launch_shared_reduce(partial_o, partial_lse, out_rows,
+                                  num_query_tokens, num_heads, num_splits, stream)
         return out
 
     raise RuntimeError(f"unhandled CAKE DSv4 route: {route}")
