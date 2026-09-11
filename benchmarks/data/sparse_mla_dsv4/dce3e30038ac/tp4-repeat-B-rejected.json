@@ -1,0 +1,114 @@
+{
+  "model": "DeepSeek-V4-Flash",
+  "model_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+  "sglang_commit": "8044524dd1669c07ca77ca574d8a43fd4d1ebdbd",
+  "tensor_parallel_size": 4,
+  "gpu_product": "NVIDIA GB300",
+  "gpu_arch": "sm_103a",
+  "gpu_count": 4,
+  "baseline_provider": "trtllm-gen-dsv4-current18",
+  "side_order": [
+    "reference",
+    "candidate"
+  ],
+  "random_seed": 12345,
+  "rank_seeds": [
+    12345,
+    12345,
+    12345,
+    12345
+  ],
+  "source_association": {
+    "associated_public_source_commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+    "associated_public_source_tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+    "relation": "Authenticated retained BF16 H64 source families. TP4 uses standalone exports; public wrapper forms are distinct. This association does not claim identical wrapper-file bytes.",
+    "workload": {
+      "dtype": "bfloat16",
+      "num_heads": 64,
+      "q_len": 1,
+      "ragged_query": false,
+      "batches": [
+        1,
+        8
+      ],
+      "widths": [
+        128,
+        132,
+        136,
+        160,
+        640
+      ]
+    },
+    "disjoint_changes": "Ragged H64 SWA and FP8 H128 changes are outside these fixed-query BF16 H64 TP4 inputs.",
+    "fixed_q_public_device_source_sha256": "652166750d513000c8641e35829c6aca6247db637be02735f904627a60516030",
+    "fixed_q_standalone_device_source_sha256": "5cbcadd86838a79918a69e8d11b44b09749e7dd24b9f94fbd8077141368aacb1",
+    "runtime_modules": [
+      {
+        "variant": "bf16_h64_swa128_stats",
+        "library_sha256": "62d2e523efa4282afe6e4b70cf4e15ed545611103e5ad97bf3be715b933ba449"
+      },
+      {
+        "variant": "bf16_h64_swa128_serial2_cluster",
+        "library_sha256": "cdf4942bda9ad5f5494707a08798f863951d9d35038a6b9bbd6b14f5f10dc336"
+      },
+      {
+        "variant": "bf16_h64_fixed_q",
+        "library_sha256": "012d8dec10ed11e64d86ccbcec9c7ae02851b43b42e2d847f2ded2894492b0d3"
+      },
+      {
+        "variant": "bf16_h64_swa128",
+        "library_sha256": "b8768af4e4f5ee6228e0be5b97b063877847bd61163492a772e1226fc749c7a3"
+      }
+    ]
+  },
+  "bundle_scope": "Result and identity readback. Raw traces and a GPU benchmark driver are not included; checksum verification does not rerun GPU measurements.",
+  "schema": "sparse-mla-sglang-tp4-rejected-repeat-public-evidence-v1",
+  "repeat": "B",
+  "repeat_status": "rejected_strict_performance",
+  "repeat_A_status": "pass",
+  "overall_TP4_qualification": "failed",
+  "publication_status": "held",
+  "pair_qualification_produced": false,
+  "accepted_final_receipt_produced": false,
+  "measurement_provenance": "Retained CUDA kernel traces reduced with the canonical cross-device active-union calculation. The strict finalizer rejected speedup below one after validating correctness and route predicates; no accepted repeat or pair receipt was produced.",
+  "correctness": {
+    "token_ids_exact": true,
+    "exact_output_tokens": 512,
+    "requests": 8,
+    "output_tokens_per_request": 64
+  },
+  "route": {
+    "all_routes_exact": true,
+    "ordered_route_seed_records": true,
+    "route_records_per_side": 24,
+    "fallback_observed": false
+  },
+  "fallback_count": 0,
+  "measured_runtime_seconds": 2822.044949625,
+  "allocation_runtime_seconds": 2873.2161672115326,
+  "end_to_end_physical_turnaround_seconds": 2873.3181903362274,
+  "metric": {
+    "event_selector": "ph=X and cat=kernel and dur>0",
+    "excluded_phases": [
+      "startup",
+      "jit",
+      "warmup",
+      "correctness",
+      "shutdown",
+      "export"
+    ],
+    "interval_reduction": "merge overlapping [ts, ts+dur] intervals across all four devices",
+    "kernel_event_sum_used_for_scoring": false,
+    "launch_gaps_excluded": true,
+    "metric": "cupti_gpu_kernel_cross_device_active_union_ms",
+    "profiler_activity": "CUDA",
+    "trace_count_candidate": 4,
+    "trace_count_reference": 4,
+    "wall_time_used_for_scoring": false,
+    "cake_active_union_ms": 131352.26037402343,
+    "flashinfer_active_union_ms": 130914.57490136719,
+    "speedup": 0.9966678497087912,
+    "delta_active_union_ms": -437.6854726562451,
+    "NCCL_kernels_included": true
+  }
+}
