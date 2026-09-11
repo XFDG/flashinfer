@@ -23,4 +23,14 @@ git rev-parse HEAD^{tree}
 python3 -m pytest tests/mla/test_cake_dsv4.py -q
 ```
 
-The tree readback must be `fe01b04f07719e9d4830c70256afee87fa45bdbd`. The pytest command checks correctness and does not repeat the performance measurements. The retained public tests passed 100/100; separate affected-route synccheck/racecheck reported zero errors and zero hazards/errors/warnings. This bundle reports direct kernel results; final TP4 comparisons will be reported separately with their own source/device association.
+The tree readback must be `fe01b04f07719e9d4830c70256afee87fa45bdbd`. The pytest command checks correctness and does not repeat the performance measurements. The retained public tests passed 100/100; separate affected-route synccheck/racecheck reported zero errors and zero hazards/errors/warnings. Fresh TP4 repeat A is recorded below. Repeat B remains pending and overall TP4 qualification is incomplete.
+
+## Real SGLang TP4 repeat A
+
+Fresh repeat A for DeepSeek-V4-Flash on four GB300 GPUs passes: **142,518.727782 → 130,994.435459 ms (1.087975434×)**. All **512 output tokens across eight requests** match exactly; all **24 ordered route records per side** match, with **eight traces** and **zero fallback**. Repeat B remains pending, overall TP4 qualification is incomplete and public source publication remains held.
+
+Times merge overlapping CUDA kernel intervals across all four devices, including NCCL kernels. Launch gaps and overlap double counting are excluded; neither elapsed wall time nor the sum of individual kernel durations is used for scoring. Startup, JIT, warmup, correctness, shutdown and export phases are excluded. Measured runtime was **3,162.423183 s**, allocation runtime **3,196.337725 s**, and physical turnaround **3,196.441646 s**.
+
+`tp4-repeat-A.json` retains the full-precision comparison, token and trace hashes, route validation, environment identities and source association. TP4 exercises the authenticated retained BF16 H64 source families through standalone exports; their public wrapper forms are distinct. The ragged H64 SWA and FP8 H128 changes are outside these fixed-query TP4 inputs. The measured public source association remains `dce3e30038acf697bf832bcd7a0ba688d4f2d351`, tree `fe01b04f07719e9d4830c70256afee87fa45bdbd`.
+
+The existing checksum command covers this result file. It verifies recorded evidence and does not rerun TP4 or reduce raw traces; those traces and a GPU benchmark driver are outside this bundle.

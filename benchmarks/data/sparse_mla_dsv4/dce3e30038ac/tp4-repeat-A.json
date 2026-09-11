@@ -1,0 +1,122 @@
+{
+  "schema": "sparse-mla-sglang-tp4-repeat-public-evidence-v1",
+  "repeat": "A",
+  "repeat_status": "pass",
+  "repeat_B_status": "pending",
+  "overall_TP4_qualification": "incomplete",
+  "publication_status": "held",
+  "model": "DeepSeek-V4-Flash",
+  "model_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+  "sglang_commit": "8044524dd1669c07ca77ca574d8a43fd4d1ebdbd",
+  "tensor_parallel_size": 4,
+  "gpu_product": "NVIDIA GB300",
+  "gpu_arch": "sm_103a",
+  "gpu_count": 4,
+  "baseline_provider": "trtllm-gen-dsv4-current18",
+  "side_order": [
+    "reference",
+    "candidate"
+  ],
+  "random_seed": 12345,
+  "rank_seeds": [
+    12345,
+    12345,
+    12345,
+    12345
+  ],
+  "correctness": {
+    "candidate_tokens_sha256": "09480c0f1fecc0f0aab0deeff7fa8c1c689e5399feec211e003c849005061f45",
+    "exact_output_tokens": 512,
+    "reference_tokens_sha256": "09480c0f1fecc0f0aab0deeff7fa8c1c689e5399feec211e003c849005061f45",
+    "requests": 8,
+    "token_ids_exact": true
+  },
+  "route": {
+    "all_routes_exact": true,
+    "combined_route_records_sha256": "23a40a96ad2230edd93a7245ecb5838751af2bf41c72aa5ecef09922344cd01c",
+    "fallback_observed": false,
+    "ordered_route_seed_records": true,
+    "route_records_per_side": 24
+  },
+  "fallback_count": 0,
+  "metric": {
+    "cake_active_union_ms": 130994.43545898437,
+    "delta_active_union_ms": 11524.292323242204,
+    "event_selector": "ph=X and cat=kernel and dur>0",
+    "excluded_phases": [
+      "startup",
+      "jit",
+      "warmup",
+      "correctness",
+      "shutdown",
+      "export"
+    ],
+    "flashinfer_active_union_ms": 142518.72778222658,
+    "interval_reduction": "merge overlapping [ts, ts+dur] intervals across all four devices",
+    "kernel_event_sum_used_for_scoring": false,
+    "launch_gaps_excluded": true,
+    "metric": "cupti_gpu_kernel_cross_device_active_union_ms",
+    "profiler_activity": "CUDA",
+    "speedup": 1.0879754340927754,
+    "trace_count_candidate": 4,
+    "trace_count_reference": 4,
+    "wall_time_used_for_scoring": false
+  },
+  "trace_sha256": {
+    "candidate_tp0": "e1821b652834d569ac5e5dab7f3411c4fecabff69e8e85acd8b22e19861c8693",
+    "candidate_tp1": "e68deac55260a8e512c3fdc35443836d1409b4596776000a40ab0c3292b0d387",
+    "candidate_tp2": "45375a981a9aae23043b352540edb5c00c2387a41f2df865f322c70ce5ebf2e4",
+    "candidate_tp3": "e5cb468deec5fe22c56419638b11ba36d276da35841bd1ad5a5848313668f49f",
+    "reference_tp0": "86c95a22390ece2118edd6e99bb8aa29f14f57e31dfce266ba6cd37d2c1796d0",
+    "reference_tp1": "fd6727990de12d2a895e98699a82bbdfbf416283b0a6399415fa8001c8c29cd4",
+    "reference_tp2": "8ad6bc1249bd1f8fe6e8db21615906d2374e3e75aa22ca7f10ef5a54819cb7e4",
+    "reference_tp3": "6772aa2c43b5fe34f254f1141d2e6c9b39c19303567c7cd9c071c218e1d95970"
+  },
+  "measured_runtime_seconds": 3162.423183117,
+  "allocation_runtime_seconds": 3196.3377247,
+  "end_to_end_physical_turnaround_seconds": 3196.4416461,
+  "source_association": {
+    "associated_public_source_commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+    "associated_public_source_tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+    "relation": "Authenticated retained BF16 H64 source families. TP4 uses standalone exports; public wrapper forms are distinct. This association does not claim identical wrapper-file bytes.",
+    "workload": {
+      "dtype": "bfloat16",
+      "num_heads": 64,
+      "q_len": 1,
+      "ragged_query": false,
+      "batches": [
+        1,
+        8
+      ],
+      "widths": [
+        128,
+        132,
+        136,
+        160,
+        640
+      ]
+    },
+    "disjoint_changes": "Ragged H64 SWA and FP8 H128 changes are outside these fixed-query BF16 H64 TP4 inputs.",
+    "fixed_q_public_device_source_sha256": "652166750d513000c8641e35829c6aca6247db637be02735f904627a60516030",
+    "fixed_q_standalone_device_source_sha256": "5cbcadd86838a79918a69e8d11b44b09749e7dd24b9f94fbd8077141368aacb1",
+    "runtime_modules": [
+      {
+        "variant": "bf16_h64_swa128_stats",
+        "library_sha256": "62d2e523efa4282afe6e4b70cf4e15ed545611103e5ad97bf3be715b933ba449"
+      },
+      {
+        "variant": "bf16_h64_swa128_serial2_cluster",
+        "library_sha256": "cdf4942bda9ad5f5494707a08798f863951d9d35038a6b9bbd6b14f5f10dc336"
+      },
+      {
+        "variant": "bf16_h64_fixed_q",
+        "library_sha256": "012d8dec10ed11e64d86ccbcec9c7ae02851b43b42e2d847f2ded2894492b0d3"
+      },
+      {
+        "variant": "bf16_h64_swa128",
+        "library_sha256": "b8768af4e4f5ee6228e0be5b97b063877847bd61163492a772e1226fc749c7a3"
+      }
+    ]
+  },
+  "bundle_scope": "Result and identity readback. Raw traces and a GPU benchmark driver are not included; checksum verification does not rerun GPU measurements."
+}
