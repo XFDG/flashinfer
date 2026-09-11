@@ -1895,15 +1895,16 @@ def trtllm_batch_decode_sparse_mla_dsv4(
     check_shape_dtype_device(
         seq_lens, (batch_size,), torch.int32, query.device, "seq_lens"
     )
-    if cum_seq_lens_q is None:
-        q_lens = seq_lens.new_full((batch_size,), q_len_per_request)
-    else:
-        q_lens = cum_seq_lens_q[1:] - cum_seq_lens_q[:-1]
-    if _validate_dsv4_sync_checks() and torch.any(seq_lens < q_lens).item():
-        raise ValueError(
-            "seq_lens must be greater than or equal to the per-request query "
-            "lengths so TRTLLM-GEN can derive the SWA-128 valid window"
-        )
+    if _validate_dsv4_sync_checks():
+        if cum_seq_lens_q is None:
+            q_lens = seq_lens.new_full((batch_size,), q_len_per_request)
+        else:
+            q_lens = cum_seq_lens_q[1:] - cum_seq_lens_q[:-1]
+        if torch.any(seq_lens < q_lens).item():
+            raise ValueError(
+                "seq_lens must be greater than or equal to the per-request query "
+                "lengths so TRTLLM-GEN can derive the SWA-128 valid window"
+            )
 
     if backend == "cake":
         from .cake_dsv4 import run_cake_dsv4

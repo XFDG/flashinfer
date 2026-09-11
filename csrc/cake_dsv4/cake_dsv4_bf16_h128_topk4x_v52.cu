@@ -1137,7 +1137,7 @@ __device__ __forceinline__ void tcgen05_commit_cg2_multicast(int mbar_addr, uint
 extern "C" {
 
 __global__ __launch_bounds__(512, 1) __cluster_dims__(2,1,1) void
-kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, const __grid_constant__ CUtensorMap tmap_swa_k, const __grid_constant__ CUtensorMap tmap_compressed_k, const __grid_constant__ CUtensorMap tmap_swa_v, const __grid_constant__ CUtensorMap tmap_compressed_v, __nv_bfloat16* __restrict__ O, float* __restrict__ partial_lse, int* __restrict__ sparse_indices, int* __restrict__ sparse_topk_lens, float* __restrict__ sinks, float* __restrict__ bmm1_scale, float* __restrict__ bmm2_scale, int num_heads, int num_query_tokens, int sparse_topk, int has_sinks, int total_work_items)
+kernel_cake_dsv4_bf16_h128_topk4x_v52(const __grid_constant__ CUtensorMap tmap_q, const __grid_constant__ CUtensorMap tmap_swa_k, const __grid_constant__ CUtensorMap tmap_compressed_k, const __grid_constant__ CUtensorMap tmap_swa_v, const __grid_constant__ CUtensorMap tmap_compressed_v, __nv_bfloat16* __restrict__ O, float* __restrict__ partial_lse, int* __restrict__ sparse_indices, int* __restrict__ sparse_topk_lens, float* __restrict__ sinks, float* __restrict__ bmm1_scale, float* __restrict__ bmm2_scale, int num_heads, int num_query_tokens, int sparse_topk, int has_sinks, int total_work_items)
 {
     // PTX global compiler scheduling controls
     asm volatile(".pragma \"global knob ForceLateCommoning=1\";\n" : : : "memory");
@@ -1319,11 +1319,14 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
                 :: "r"(o_first_slice_seeded_addr), "r"(peer_rank) : "memory");
             #pragma unroll 1
             for (unsigned int work_idx = cluster_id; work_idx < total_work_items; work_idx += num_clusters) {
-                int split_idx = work_idx % (unsigned int)(((0) ? 3 : 1));
-                int query_idx = work_idx / (unsigned int)(((0) ? 3 : 1));
+                int split_idx = work_idx % (unsigned int)(((1) ? 5 : 1));
+                int query_idx = work_idx / (unsigned int)(((1) ? 5 : 1));
                 int active_topk = sparse_topk_lens[query_idx];
-                int num_kv_tiles = ((sparse_topk + 128 - 1) / 128 + ((0) ? 3 : 1) - 1) / ((0) ? 3 : 1);
-                int first_kv_tile = split_idx * num_kv_tiles;
+                int owner_capacity = ((sparse_topk + 128 - 1) / 128 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1);
+                int first_owner_tile = work_idx % (unsigned int)(((1) ? 5 : 1)) * (unsigned int)owner_capacity;
+                int _min_2 = ((owner_capacity) < ((sparse_topk + 128 - 1) / 128 - first_owner_tile) ? (owner_capacity) : ((sparse_topk + 128 - 1) / 128 - first_owner_tile));
+                int num_kv_tiles = _min_2;
+                int first_kv_tile = first_owner_tile;
                 int head_idx = cta_rank * 64 + my_row;
                 float row_max_val = -CAKE_INF;
                 float row_sum_val = 0.0f;
@@ -1547,9 +1550,12 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
             unsigned int _phase_o_full_0 = 0;
             #pragma unroll 1
             for (unsigned int work_idx_1 = cluster_id; work_idx_1 < total_work_items; work_idx_1 += num_clusters) {
-                int split_idx_1 = work_idx_1 % (unsigned int)(((0) ? 3 : 1));
-                int query_idx_1 = work_idx_1 / (unsigned int)(((0) ? 3 : 1));
-                int num_kv_tiles_1 = ((sparse_topk + 128 - 1) / 128 + ((0) ? 3 : 1) - 1) / ((0) ? 3 : 1);
+                int split_idx_1 = work_idx_1 % (unsigned int)(((1) ? 5 : 1));
+                int query_idx_1 = work_idx_1 / (unsigned int)(((1) ? 5 : 1));
+                int owner_capacity_1 = ((sparse_topk + 128 - 1) / 128 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1);
+                int first_owner_tile_1 = work_idx_1 % (unsigned int)(((1) ? 5 : 1)) * (unsigned int)owner_capacity_1;
+                int _min_3 = ((owner_capacity_1) < ((sparse_topk + 128 - 1) / 128 - first_owner_tile_1) ? (owner_capacity_1) : ((sparse_topk + 128 - 1) / 128 - first_owner_tile_1));
+                int num_kv_tiles_1 = _min_3;
                 float final_sum = 0.0f;
                 float final_max = -CAKE_INF;
                 #pragma unroll 1
@@ -1613,7 +1619,15 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
                 float _rcp_0 = approx_rcp(final_sum);
                 float inv_sum = ((final_sum > 0.0f) ? _rcp_0 : 0.0f);
                 int head_idx_1 = cta_rank * 64 + my_row_1;
-                int output_offset = ((0) ? ((query_idx_1 * num_heads + head_idx_1) * ((0) ? 3 : 1) + split_idx_1) * 512 : (query_idx_1 * num_heads + head_idx_1) * 512);
+                int output_offset = ((1) ? ((query_idx_1 * num_heads + head_idx_1) * ((1) ? 5 : 1) + split_idx_1) * 512 : (query_idx_1 * num_heads + head_idx_1) * 512);
+                {
+                    if (n_half_1 == 0 && head_idx_1 < num_heads) {
+                        int stat_offset = (query_idx_1 * num_heads + head_idx_1) * ((1) ? 5 : 1) + split_idx_1;
+                        float _log2_0;
+                        asm volatile("lg2.approx.ftz.f32 %0, %1;" : "=f"(_log2_0) : "f"(final_sum));
+                        partial_lse[stat_offset] = ((final_sum > 0.0f) ? final_max * softmax_scale_log2_1 + _log2_0 : -CAKE_INF);
+                    }
+                }
                 #pragma unroll
                 for (int acc_stage_1 = 0; acc_stage_1 < 2; acc_stage_1++) {
                     #pragma unroll
@@ -1684,7 +1698,10 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
             unsigned int _phase_v_full = 0;
             #pragma unroll 1
             for (unsigned int work_idx_2 = cluster_id; work_idx_2 < total_work_items; work_idx_2 += num_clusters) {
-                int num_kv_tiles_2 = ((sparse_topk + 128 - 1) / 128 + ((0) ? 3 : 1) - 1) / ((0) ? 3 : 1);
+                int owner_capacity_2 = ((sparse_topk + 128 - 1) / 128 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1);
+                int first_owner_tile_2 = work_idx_2 % (unsigned int)(((1) ? 5 : 1)) * (unsigned int)owner_capacity_2;
+                int _min_1 = ((owner_capacity_2) < ((sparse_topk + 128 - 1) / 128 - first_owner_tile_2) ? (owner_capacity_2) : ((sparse_topk + 128 - 1) / 128 - first_owner_tile_2));
+                int num_kv_tiles_2 = _min_1;
                 if (cta_rank == 0) {
                     mbarrier_wait(q_full_addr, _phase_q_full_0);
                     _phase_q_full_0 ^= 1;
@@ -2013,10 +2030,13 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
             unsigned int _phase_v_empty = 1;
             #pragma unroll 1
             for (unsigned int work_idx_3 = cluster_id; work_idx_3 < total_work_items; work_idx_3 += num_clusters) {
-                int split_idx_2 = work_idx_3 % (unsigned int)(((0) ? 3 : 1));
-                int query_idx_2 = work_idx_3 / (unsigned int)(((0) ? 3 : 1));
-                int num_kv_tiles_3 = ((sparse_topk + 128 - 1) / 128 + ((0) ? 3 : 1) - 1) / ((0) ? 3 : 1);
-                int first_kv_tile_1 = split_idx_2 * num_kv_tiles_3;
+                int split_idx_2 = work_idx_3 % (unsigned int)(((1) ? 5 : 1));
+                int query_idx_2 = work_idx_3 / (unsigned int)(((1) ? 5 : 1));
+                int owner_capacity_3 = ((sparse_topk + 128 - 1) / 128 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1);
+                int first_owner_tile_3 = work_idx_3 % (unsigned int)(((1) ? 5 : 1)) * (unsigned int)owner_capacity_3;
+                int _min_0 = ((owner_capacity_3) < ((sparse_topk + 128 - 1) / 128 - first_owner_tile_3) ? (owner_capacity_3) : ((sparse_topk + 128 - 1) / 128 - first_owner_tile_3));
+                int num_kv_tiles_3 = _min_0;
+                int first_kv_tile_1 = first_owner_tile_3;
                 mbarrier_wait(q_empty_addr, _phase_q_empty_0);
                 _phase_q_empty_0 ^= 1;
                 if (load_warp_rank == 0) {
@@ -2175,24 +2195,30 @@ kernel_cake_dsv4_bf16_h128_topk128x(const __grid_constant__ CUtensorMap tmap_q, 
             const int index_dummy = 0;
             #pragma unroll 1
             for (unsigned int work_idx_4 = cluster_id; work_idx_4 < total_work_items; work_idx_4 += num_clusters) {
-                int split_idx_3 = work_idx_4 % (unsigned int)(((0) ? 3 : 1));
-                int query_idx_3 = work_idx_4 / (unsigned int)(((0) ? 3 : 1));
-                int sparse_base = query_idx_3 * sparse_topk + split_idx_3 * (9 / ((0) ? 3 : 1)) * 128;
+                int split_idx_3 = work_idx_4 % (unsigned int)(((1) ? 5 : 1));
+                int query_idx_3 = work_idx_4 / (unsigned int)(((1) ? 5 : 1));
+                int sparse_base = query_idx_3 * sparse_topk + split_idx_3 * ((9 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1)) * 128;
                 #pragma unroll
-                for (int index_pass = 0; index_pass < 9 / ((0) ? 3 : 1); index_pass++) {
+                for (int index_pass = 0; index_pass < (9 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1); index_pass++) {
                     int index_offset_4 = (unsigned int)(index_pass * 128) + lane * 4;
                     int values[4];
-                    int _vec_load_0[4];
-                    {
-                        int4 _iv4 = *reinterpret_cast<const int4*>(sparse_indices + (sparse_base + index_offset_4) + 0);
-                        _vec_load_0[0 + 0] = _iv4.x;
-                        _vec_load_0[0 + 1] = _iv4.y;
-                        _vec_load_0[0 + 2] = _iv4.z;
-                        _vec_load_0[0 + 3] = _iv4.w;
-                    }
                     #pragma unroll
                     for (int i = 0; i < 4; i++) {
-                        values[i] = _vec_load_0[i];
+                        values[i] = 0;
+                    }
+                    if ((split_idx_3 * ((9 + ((1) ? 5 : 1) - 1) / ((1) ? 5 : 1)) + index_pass) * 128 < sparse_topk) {
+                        int _vec_load_0[4];
+                        {
+                            int4 _iv4 = *reinterpret_cast<const int4*>(sparse_indices + (sparse_base + index_offset_4) + 0);
+                            _vec_load_0[0 + 0] = _iv4.x;
+                            _vec_load_0[0 + 1] = _iv4.y;
+                            _vec_load_0[0 + 2] = _iv4.z;
+                            _vec_load_0[0 + 3] = _iv4.w;
+                        }
+                        #pragma unroll
+                        for (int i_1 = 0; i_1 < 4; i_1++) {
+                            values[i_1] = _vec_load_0[i_1];
+                        }
                     }
                     asm volatile("st.shared.v4.b32 [%0], {%1,%2,%3,%4};" :: "r"(smem_indices_addr + (unsigned int)(index_offset_4 * 4)), "r"(values[0]), "r"(values[1]), "r"(values[2]), "r"(values[3]) : "memory");
                 }

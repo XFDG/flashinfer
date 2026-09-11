@@ -1261,6 +1261,8 @@ kernel_cake_dsv4_fp8_h128(const __grid_constant__ CUtensorMap tmap_q, const __gr
     const int smem_sparse_indices_addr = smem + 168448;
     uint8_t* smem_p_fp8 = reinterpret_cast<uint8_t*>(smem_raw + 174592);
     const int smem_p_fp8_addr = smem + 174592;
+    asm volatile("barrier.cluster.arrive.release.aligned;" ::: "memory");
+    asm volatile("barrier.cluster.wait.acquire.aligned;" ::: "memory");
 
     // Mbarrier init (21 pipeline groups, 0 ordered-sequence groups, 40 barriers)
     // Mbarriers at smem_raw[0..320)

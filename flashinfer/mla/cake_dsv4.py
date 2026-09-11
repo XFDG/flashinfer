@@ -213,7 +213,7 @@ def _route(
         if max_q_len >= 257:
             return "fp8_lowhead_prefill"
         if is_swa:
-            return "fp8_lowhead_swa"
+            return "fp8_lowhead_prefill"
         if num_heads == 64:
             return "fp8_lowhead_h64"
         return "fp8_lowhead_one_partition" if sparse_topk <= 256 else "fp8_lowhead_split"
@@ -229,15 +229,15 @@ def _route(
         return "bf16_h8_h16_source_exact"
     if num_heads in (8, 16):
         if is_swa:
-            return "bf16_h8_swa128_v42" if num_heads == 8 else "bf16_h16_h32_swa128_v41"
+            return "bf16_h8_swa128_v43" if num_heads == 8 else "bf16_h16_h32_swa128_v44"
         return "bf16_h8_h32"
     if num_heads == 32:
         if is_swa:
-            return "bf16_h16_h32_swa128_v41"
+            return "bf16_h16_h32_swa128_v44"
         if is_topk4x:
             return "bf16_h32_topk4x_v38"
         if is_topk128x:
-            return "bf16_h32_topk128x_v40"
+            return "bf16_h32_topk128x_early_v47"
         raise ValueError("BF16 H32 compressed cache requires page size 64 or 2")
     if num_heads == 64:
         if not ragged:
@@ -245,15 +245,15 @@ def _route(
         if max_q_len >= 257:
             return "bf16_h64_prefill"
         if is_swa:
-            return "bf16_h64_guard_single_tile_r23" if max_q_len > 5 else "bf16_swa128_single_cta"
-        return "bf16_h64_compressed"
+            return "bf16_h64_guard_q_tma_batch_r25" if max_q_len > 5 else "bf16_swa128_single_cta"
+        return "bf16_h64_compressed_q8_v38"
     if num_heads == 128:
         if max_q_len >= 257:
             return "bf16_h128_prefill_v42"
         if is_swa:
             return "bf16_h128_swa128"
         if is_topk4x and sparse_topk == 1152:
-            return "bf16_h128_topk4x"
+            return "bf16_h128_topk4x_v52"
         return "bf16_h128_topk128x"
     raise ValueError(f"unsupported CAKE BF16 DSv4 head count: {num_heads}")
 
@@ -388,7 +388,7 @@ def run_cake_dsv4(
 
     if route in (
         "bf16_swa128_single_cta", "bf16_h128_swa128",
-        "bf16_h8_swa128_v42", "bf16_h16_h32_swa128_v41",
+        "bf16_h8_swa128_v43", "bf16_h16_h32_swa128_v44",
     ):
         head_tiles = (num_heads + 63) // 64 if route == "bf16_h128_swa128" else 1
         scalars = (num_heads, head_tiles, has_sinks) if route == "bf16_h128_swa128" else (num_heads, has_sinks)
@@ -408,16 +408,16 @@ def run_cake_dsv4(
         )
         return out
 
-    if route == "bf16_h64_guard_single_tile_r23":
+    if route == "bf16_h64_guard_q_tma_batch_r25":
         _launch_variant(
             route, query, swa, compressed, out_rows, indices, active_lens,
             seq_lens, cum_seq_lens_q, sink_tensor, scale1, scale2,
             num_heads, sparse_topk, batch_size, max_q_len, int(ragged), has_sinks,
-            grid=(num_query_tokens, 1, 1), stream=stream,
+            grid=(num_query_tokens, 2, 1), stream=stream,
         )
         return out
 
-    if route in ("bf16_h64_compressed", "bf16_h64_fixed_q"):
+    if route in ("bf16_h64_compressed_q8_v38", "bf16_h64_fixed_q"):
         num_splits = (sparse_topk + 127) // 128
         partial_o, partial_lse = _partition_workspace(
             workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
@@ -430,13 +430,14 @@ def run_cake_dsv4(
         )
         if num_splits > 1:
             _launch_variant(
-                f"{route}_reduce", partial_o, partial_lse, out_rows,
+                ("bf16_h64_compressed_reduce" if route == "bf16_h64_compressed_q8_v38"
+                 else "bf16_h64_fixed_q_reduce"), partial_o, partial_lse, out_rows,
                 num_heads, num_splits,
                 grid=(num_query_tokens, num_heads, 1), stream=stream,
             )
         return out
 
-    if route in ("bf16_h32_topk4x_v38", "bf16_h32_topk128x_v40"):
+    if route in ("bf16_h32_topk4x_v38", "bf16_h32_topk128x_early_v47"):
         num_splits = (sparse_topk + 127) // 128
         head_tiles = (num_heads + 7) // 8
         partial_o, partial_lse = _partition_workspace(
@@ -463,18 +464,22 @@ def run_cake_dsv4(
         )
         return out
 
-    if route in ("bf16_h128_topk128x", "bf16_h128_topk4x", "bf16_h128_prefill_v42"):
-        num_splits = 3 if route == "bf16_h128_topk4x" else 1
+    if route in ("bf16_h128_topk128x", "bf16_h128_topk4x_v52", "bf16_h128_prefill_v42"):
+        num_splits = 5 if route == "bf16_h128_topk4x_v52" else 1
         partial_o, partial_lse = _partition_workspace(
             workspace_buffer, out_rows, num_query_tokens, num_heads, num_splits
         )
         packed_indices = _padded_sparse_indices(workspace_buffer, indices) if route == "bf16_h128_topk128x" else indices
         total_work_items = num_query_tokens * num_splits
+        grid_x = total_work_items * 2
+        if route == "bf16_h128_prefill_v42":
+            sm_count = torch.cuda.get_device_properties(query.device).multi_processor_count
+            grid_x = min(grid_x, 2 * max(1, sm_count // 2))
         _launch_variant(
             route, query, swa, compressed, swa, compressed, partial_o,
             partial_lse, packed_indices, active_lens, sink_tensor, scale1, scale2,
             num_heads, num_query_tokens, sparse_topk, has_sinks, total_work_items,
-            grid=(total_work_items * 2, 1, 1), stream=stream,
+            grid=(grid_x, 1, 1), stream=stream,
         )
         if num_splits > 1:
             _launch_shared_reduce(partial_o, partial_lse, out_rows,
@@ -503,7 +508,7 @@ def run_cake_dsv4(
             seq_lens, cum_seq_lens_q, sink_tensor, scale1, scale2,
             num_heads, num_query_tokens, sparse_topk, has_sinks,
             num_query_tokens, max_q_len, batch_size,
-            grid=(max_q_len * 2, 1, batch_size), stream=stream,
+            grid=(num_query_tokens * 2, 1, 1), stream=stream,
         )
         return out
 
