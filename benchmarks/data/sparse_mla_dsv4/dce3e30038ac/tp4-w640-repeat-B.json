@@ -1,0 +1,127 @@
+{
+  "allocation_runtime_seconds": 3132.311843,
+  "baseline_provider": "trtllm-gen-dsv4-current18",
+  "bundle_scope": "Recorded results and identities. Raw traces, model weights, the separate TP4 integration, exact collector/runtime bindings and a GPU replay driver are not included.",
+  "correctness": {
+    "candidate_tokens_sha256": "09480c0f1fecc0f0aab0deeff7fa8c1c689e5399feec211e003c849005061f45",
+    "exact_output_tokens": 512,
+    "reference_tokens_sha256": "09480c0f1fecc0f0aab0deeff7fa8c1c689e5399feec211e003c849005061f45",
+    "requests": 8,
+    "token_ids_exact": true
+  },
+  "end_to_end_physical_turnaround_seconds": 3132.4070192,
+  "fallback_count": 0,
+  "final_receipt_sha256": "4be70a1d699da704bc05316f38ebe7a23dcf16cfbdb6bb660d8b7c3fd7075ad6",
+  "gpu_arch": "sm_103a",
+  "gpu_count": 4,
+  "gpu_product": "NVIDIA GB300",
+  "measured_runtime_seconds": 3072.548526656,
+  "metric": {
+    "NCCL_kernels_included": true,
+    "cake_active_union_ms": 125388.16424121094,
+    "delta_active_union_ms": 815.7641269531305,
+    "event_selector": "ph=X and cat=kernel and dur>0",
+    "excluded_phases": [
+      "startup",
+      "jit",
+      "warmup",
+      "correctness",
+      "shutdown",
+      "export"
+    ],
+    "flashinfer_active_union_ms": 126203.92836816407,
+    "interval_reduction": "merge overlapping [ts, ts+dur] intervals across all four devices",
+    "kernel_event_sum_used_for_scoring": false,
+    "launch_gaps_excluded": true,
+    "metric": "cupti_gpu_kernel_cross_device_active_union_ms",
+    "profiler_activity": "CUDA",
+    "speedup": 1.006505910122297,
+    "trace_count_candidate": 4,
+    "trace_count_reference": 4,
+    "wall_time_used_for_scoring": false
+  },
+  "model": "DeepSeek-V4-Flash",
+  "model_revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+  "pair_status": "pass",
+  "policy": "tp4-w640-policy.json",
+  "random_seed": 12345,
+  "rank_seeds": [
+    12345,
+    12345,
+    12345,
+    12345
+  ],
+  "repeat": "B",
+  "repeat_status": "pass",
+  "result_ledger_sha256": "755d597f3986477b7eed97f79d2b5e8faabc1e51203ab0cfa95dfb6a98f3f84d",
+  "route": {
+    "all_routes_exact": true,
+    "combined_route_records_sha256": "23a40a96ad2230edd93a7245ecb5838751af2bf41c72aa5ecef09922344cd01c",
+    "fallback_observed": false,
+    "ordered_route_seed_records": true,
+    "route_records_per_side": 24
+  },
+  "schema": "sparse-mla-sglang-tp4-repeat-public-evidence-v2",
+  "sglang_commit": "8044524dd1669c07ca77ca574d8a43fd4d1ebdbd",
+  "side_order": [
+    "candidate",
+    "reference"
+  ],
+  "source_association": {
+    "associated_public_source_commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+    "associated_public_source_tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+    "disjoint_changes": "Ragged H64 SWA and FP8 H128 changes are outside these fixed-query BF16 H64 TP4 inputs.",
+    "fixed_q_public_device_source_sha256": "652166750d513000c8641e35829c6aca6247db637be02735f904627a60516030",
+    "fixed_q_standalone_device_source_sha256": "5cbcadd86838a79918a69e8d11b44b09749e7dd24b9f94fbd8077141368aacb1",
+    "private_tp4_policy_changed": true,
+    "public_runtime_source_unchanged": true,
+    "relation": "Authenticated retained BF16 H64 source families. TP4 uses a separate standalone-export integration and width policy; public wrapper and standalone device-source forms have distinct byte identities. Public FlashInfer runtime source and its direct94 dispatch are unchanged.",
+    "runtime_modules": [
+      {
+        "library_sha256": "62d2e523efa4282afe6e4b70cf4e15ed545611103e5ad97bf3be715b933ba449",
+        "variant": "bf16_h64_swa128_stats"
+      },
+      {
+        "library_sha256": "cdf4942bda9ad5f5494707a08798f863951d9d35038a6b9bbd6b14f5f10dc336",
+        "variant": "bf16_h64_swa128_serial2_cluster"
+      },
+      {
+        "library_sha256": "012d8dec10ed11e64d86ccbcec9c7ae02851b43b42e2d847f2ded2894492b0d3",
+        "variant": "bf16_h64_fixed_q"
+      },
+      {
+        "library_sha256": "b8768af4e4f5ee6228e0be5b97b063877847bd61163492a772e1226fc749c7a3",
+        "variant": "bf16_h64_swa128"
+      }
+    ],
+    "width_policy_file": "tp4-w640-policy.json",
+    "workload": {
+      "batches": [
+        1,
+        8
+      ],
+      "dtype": "bfloat16",
+      "num_heads": 64,
+      "q_len": 1,
+      "ragged_query": false,
+      "widths": [
+        128,
+        132,
+        136,
+        160,
+        640
+      ]
+    }
+  },
+  "tensor_parallel_size": 4,
+  "trace_sha256": {
+    "candidate_tp0": "0f5fdb372fbaa6cef6f0a58b60ee639ab64e4f56558146ec8d63da75c6396d33",
+    "candidate_tp1": "85cf9f082b472bd468f53a8192d47229de119824dad0bf196a8d2c62956bf29a",
+    "candidate_tp2": "4ac5e0720df165e6eff201a73fee9090bb520be81e03e14bc990e6b67d3a4b50",
+    "candidate_tp3": "ad25e271205ff6f8f3ddb557384f1c23f82a924c111a8556c2a8d4fd15c6e98a",
+    "reference_tp0": "20729941244008f645e19aade310eab454f8d27c7795ee25fa48ec232096e675",
+    "reference_tp1": "4e46c8f7c4a3071f48d421265ae28d36b4f0a85fd525f23b2a4157ae5afd4b38",
+    "reference_tp2": "f83266dc3249785fb0549971b904dd65b2a94c7be7a24fa60851e8e636622853",
+    "reference_tp3": "8ed307c602c3de7944029719adeb191fdd7c7926fa92a6dfe6fb2f49defbf221"
+  }
+}

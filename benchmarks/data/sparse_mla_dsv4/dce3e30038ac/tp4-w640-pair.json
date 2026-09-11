@@ -1,0 +1,49 @@
+{
+  "A_before_B": true,
+  "NCCL_kernels_included": true,
+  "acceptance": "Both repeats independently pass strict baseline/candidate speedup above1 and exact correctness/routes. Aggregate speedup does not rescue either failing repeat.",
+  "allocation_runtime_seconds": 6363.3236835,
+  "canonical_pair_ledger_sha256": "e06dba9f89fec992327df94af04905673126dcde4cd7c7359d3e97aa7b646688",
+  "canonical_pair_qualification_sha256": "662885fdca0d20cbd0eb6a5b0e43e70c25be30e325150ce089498d2cbe3720d3",
+  "canonical_pair_receipt_sha256": "a72f576b6aeebbbe01e73699750c723a17628009051cd114c5ef718a597bec1d",
+  "end_to_end_physical_turnaround_seconds": 6524.9880856,
+  "fallback_count": 0,
+  "kernel_event_sum_used_for_scoring": false,
+  "launch_gaps_excluded": true,
+  "measured_runtime_seconds": 6252.3339213439995,
+  "metric": "cupti_gpu_kernel_cross_device_active_union_ms",
+  "minimum_repeat_speedup": 1.006505910122297,
+  "nonoverlap_verified": true,
+  "output_tokens_per_side_per_repeat": 512,
+  "pair_physical_span_definition": "repeat_b.watcher_completed_unix_ns - repeat_a.submitted_unix_ns",
+  "pair_status": "pass",
+  "policy": "tp4-w640-policy.json",
+  "repeat_A_file": "tp4-w640-repeat-A.json",
+  "repeat_A_final_sha256": "1b505ba339c211e10d8827969aacee660de10219b79458c7579dc798f8f3fca1",
+  "repeat_A_public_file_sha256": "a20678b35a7bfd56d93713e43353013d5539ed9a1a0c586d1be6e5d886c9e7c2",
+  "repeat_B_file": "tp4-w640-repeat-B.json",
+  "repeat_B_final_sha256": "4be70a1d699da704bc05316f38ebe7a23dcf16cfbdb6bb660d8b7c3fd7075ad6",
+  "repeat_B_public_file_sha256": "b1913f4c351fcf0b1e2a8d7ab0e57443d8cedffd204b72103549d5d5d7fa8832",
+  "route_record_count_per_side": 24,
+  "same_candidate_binding": true,
+  "schema": "sparse-mla-sglang-tp4-pair-public-evidence-v1",
+  "sequential_order": [
+    "A",
+    "B"
+  ],
+  "speedup_A": 1.085896427415928,
+  "speedup_B": 1.006505910122297,
+  "token_ids_exact": true,
+  "trace_count_per_repeat": 8,
+  "wall_time_used_for_scoring": false,
+  "within_repeat_side_order": {
+    "A": [
+      "reference",
+      "candidate"
+    ],
+    "B": [
+      "candidate",
+      "reference"
+    ]
+  }
+}

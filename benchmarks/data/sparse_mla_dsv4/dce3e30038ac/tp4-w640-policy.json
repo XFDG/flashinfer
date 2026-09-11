@@ -1,0 +1,213 @@
+{
+  "adapter_sha256": "579bf3de035807853984a49a510ab2cc7040e9809ecab75419818a730cd0f969",
+  "associated_public_source_commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+  "associated_public_source_tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+  "canonical_reference_and_sanitizers": {
+    "atol": 0.01,
+    "canonical_reference_max_abs_error": 0.03125,
+    "gates": [
+      {
+        "exit_code": 0,
+        "external_summary": null,
+        "physical_seconds": 50.39006471633911,
+        "process_seconds": 36.562643592013046,
+        "status": "PASSED",
+        "tool": "correctness"
+      },
+      {
+        "exit_code": 0,
+        "external_summary": "========= ERROR SUMMARY: 0 errors",
+        "physical_seconds": 182.68157815933228,
+        "process_seconds": 172.87978028401267,
+        "status": "PASSED",
+        "tool": "synccheck"
+      },
+      {
+        "exit_code": 0,
+        "external_summary": "========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)",
+        "physical_seconds": 196.1575629711151,
+        "process_seconds": 176.122561939992,
+        "status": "PASSED",
+        "tool": "racecheck"
+      }
+    ],
+    "input": "Actual model-captured B8/W640 operands, all640 active per query",
+    "rtol": 0.01
+  },
+  "change": "Width640 selects the existing fixed_q producer plus reducer; all other widths retain their established routes",
+  "normal_policy_direct_qualification": {
+    "acceptance_scope": "Bounded policy preflight includes unchanged width128 identity rows. Separate direct94 performance evidence retains94 strict wins.",
+    "baseline_active_union_ms": 0.186817,
+    "candidate_active_union_ms": 0.139841,
+    "launch_gaps_excluded": true,
+    "row_count": 10,
+    "rows": [
+      {
+        "baseline_ms": 0.011424,
+        "batch": 1,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.011424,
+        "identity_route": true,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.0,
+        "width": 128
+      },
+      {
+        "baseline_ms": 0.011361,
+        "batch": 8,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.011361,
+        "identity_route": true,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.0,
+        "width": 128
+      },
+      {
+        "baseline_ms": 0.016608,
+        "batch": 1,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.013824,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.201388888888889,
+        "width": 132
+      },
+      {
+        "baseline_ms": 0.016672,
+        "batch": 8,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.016064,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.0378486055776892,
+        "width": 132
+      },
+      {
+        "baseline_ms": 0.016576,
+        "batch": 1,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.013824,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.1990740740740742,
+        "width": 136
+      },
+      {
+        "baseline_ms": 0.016704,
+        "batch": 8,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.015968,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.0460921843687374,
+        "width": 136
+      },
+      {
+        "baseline_ms": 0.016672,
+        "batch": 1,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.013824,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.2060185185185186,
+        "width": 160
+      },
+      {
+        "baseline_ms": 0.016864,
+        "batch": 8,
+        "candidate_kernel_activities": 1.0,
+        "candidate_ms": 0.015168,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.0,
+        "speedup": 1.1118143459915613,
+        "width": 160
+      },
+      {
+        "baseline_ms": 0.032032,
+        "batch": 1,
+        "candidate_kernel_activities": 2.0,
+        "candidate_ms": 0.014272,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.000288,
+        "speedup": 2.2443946188340806,
+        "width": 640
+      },
+      {
+        "baseline_ms": 0.031904,
+        "batch": 8,
+        "candidate_kernel_activities": 2.0,
+        "candidate_ms": 0.014112,
+        "identity_route": false,
+        "inter_kernel_gap_ms_excluded": 0.000288,
+        "speedup": 2.2607709750566896,
+        "width": 640
+      }
+    ],
+    "speedup": 1.3359243712502058,
+    "status": "pass"
+  },
+  "policy_scope": "Separate SGLang TP4 standalone-export integration; BF16 H64, q_len=1, nonragged queries",
+  "policy_sha256": "73724a3c523323ac6b92483e52b28ca246e13bb59b43118ff419b24d0b02e281",
+  "private_tp4_policy_changed": true,
+  "public_runtime_source_unchanged": true,
+  "reproduction_scope": "Policy and recorded-result readback. The separate TP4 integration capsule, exact collector/runtime bindings, model environment and raw traces are outside this public bundle. Public checksum/correctness commands do not rerun TP4.",
+  "runtime_environment": {
+    "SGLANG_SET_CPU_AFFINITY": "0",
+    "image_read_only": true,
+    "temporary_directory": "Private writable runtime temporary directory, identical for reference and candidate"
+  },
+  "schema": "sparse-mla-sglang-tp4-width-policy-public-evidence-v1",
+  "source_association": {
+    "associated_public_source_commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+    "associated_public_source_tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+    "disjoint_changes": "Ragged H64 SWA and FP8 H128 changes are outside these fixed-query BF16 H64 TP4 inputs.",
+    "fixed_q_public_device_source_sha256": "652166750d513000c8641e35829c6aca6247db637be02735f904627a60516030",
+    "fixed_q_standalone_device_source_sha256": "5cbcadd86838a79918a69e8d11b44b09749e7dd24b9f94fbd8077141368aacb1",
+    "private_tp4_policy_changed": true,
+    "public_runtime_source_unchanged": true,
+    "relation": "Authenticated retained BF16 H64 source families. TP4 uses a separate standalone-export integration and width policy; public wrapper and standalone device-source forms have distinct byte identities. Public FlashInfer runtime source and its direct94 dispatch are unchanged.",
+    "runtime_modules": [
+      {
+        "library_sha256": "62d2e523efa4282afe6e4b70cf4e15ed545611103e5ad97bf3be715b933ba449",
+        "variant": "bf16_h64_swa128_stats"
+      },
+      {
+        "library_sha256": "cdf4942bda9ad5f5494707a08798f863951d9d35038a6b9bbd6b14f5f10dc336",
+        "variant": "bf16_h64_swa128_serial2_cluster"
+      },
+      {
+        "library_sha256": "012d8dec10ed11e64d86ccbcec9c7ae02851b43b42e2d847f2ded2894492b0d3",
+        "variant": "bf16_h64_fixed_q"
+      },
+      {
+        "library_sha256": "b8768af4e4f5ee6228e0be5b97b063877847bd61163492a772e1226fc749c7a3",
+        "variant": "bf16_h64_swa128"
+      }
+    ],
+    "width_policy_file": "tp4-w640-policy.json",
+    "workload": {
+      "batches": [
+        1,
+        8
+      ],
+      "dtype": "bfloat16",
+      "num_heads": 64,
+      "q_len": 1,
+      "ragged_query": false,
+      "widths": [
+        128,
+        132,
+        136,
+        160,
+        640
+      ]
+    }
+  },
+  "width_to_variant": {
+    "128": "bf16_h64_fixed_q",
+    "132": "bf16_h64_swa128_serial2_cluster",
+    "136": "bf16_h64_swa128_serial2_cluster",
+    "160": "bf16_h64_swa128_serial2_cluster",
+    "640": "bf16_h64_fixed_q"
+  }
+}
