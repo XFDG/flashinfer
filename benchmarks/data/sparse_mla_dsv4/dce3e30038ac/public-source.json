@@ -1,0 +1,341 @@
+{
+  "schema": "sparse-mla-public-source-v1",
+  "commit": "dce3e30038acf697bf832bcd7a0ba688d4f2d351",
+  "tree": "fe01b04f07719e9d4830c70256afee87fa45bdbd",
+  "parent": "495b528f58bff1ac44790555a2b2b82d92d5cfe7",
+  "previous_public_head": "441334ef9fbb70bae575d60893b20f1b86d6c06a",
+  "previous_public_head_is_ancestor": true,
+  "changed_path_count": 66,
+  "changed_files": [
+    {
+      "mode": "100644",
+      "git_blob": "35616de20f89298abff9d5af881f874d86cf7a47",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_prefill_v42.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "e7f7542da12370cffa4383ba9be82bfa17783235",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_prefill_v42_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "43ff2912eceafb07c8815f98193695ddb1883612",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_swa128.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "bb9828e83fef65e21adbc6dc353fcf3ad79323b9",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_swa128_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "21df25fa4bee6192c995a00103e7673da9ad816f",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk128x.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "ce5260c73118a155cc1f011e6d225014587737df",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk128x_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "7345d4b5e67d740ac69e1df7d700f5f00ee7211c",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "9480c643f5cf4964eb0c876a5923df761a74ee45",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "01124da2c4e0a0539d6b3df61977b7b6894f4be2",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x_v51.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "8382a3128791a971cb3293bd74e8ea74dc395583",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x_v51_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "c2c98192abaff5ba3ac64264d15ff754ea976ec7",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x_v52.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "1ebd2bf2f21928c4c8ff00c63c9a4da03f74866d",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h128_topk4x_v52_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "37d11a716f59e0e63840c6c226a2285d5ae3c19b",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h16_h32_swa128_v41.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "fc0d55d74387033a4a19eed00ee5d59dc3d31213",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h16_h32_swa128_v41_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "ac4dad004612da503c895060472a0fedb148df4a",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h16_h32_swa128_v44.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "17bab160429f4fe3ecf3f49a6b8129521f1f90ac",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h16_h32_swa128_v44_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "6f87b16f6294a969cd80bf93d3a74905f7dd7a93",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk128x_early_v47.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "27c16d0be15670677d63f404e829d0bb72709c7b",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk128x_early_v47_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "515de672aaf2448e8340b9cbc26dcf1670e79cdf",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk128x_v40.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "aa1bf36679572512b47f6185b8ddff5b88cc9841",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk128x_v40_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "4082bb32cc7731145878d5c02aec4489a5554570",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk4x_v38.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "c977b741ef163ff0df89cfd164a3ea6d1d741a3d",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h32_topk4x_v38_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "bddc70b8807a80718d9b024f20122e7f189d5844",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "ececd91c8f8496025806374c3909c4f03dc960a6",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "f2d754a12cc811d8e5b997ece30c47ff896c116c",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed_q8_v38.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "9b2873ac3cd129eb07f2410fabf95bce28052f8d",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed_q8_v38_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "b3c48b7e03e012397b91699170825f44a69813de",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed_reduce.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "d45df3aacb638c00107f16a460e403c4e038e318",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_compressed_reduce_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "9244e7d83d088c24b1990a1e5aa92e5b4c5806b1",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_fixed_q.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "61cfa499bb3acba2b9421cf7293ed0fb5887b8d9",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_fixed_q_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "954bce4ca914896c5f76fa2b9214a6503a0ac248",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_fixed_q_reduce.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "fc33fc2ce4879486ab536d15c83ce9475eeacb77",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_fixed_q_reduce_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "3ef8ca9bb078bf83144a1e3420c1cf009f448a20",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_guard_q_tma_batch_r25.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "a768c9fdabd31cdc81dff1e43bcdd35aaf8eb894",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_guard_q_tma_batch_r25_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "8fb9ee490a3a1451c4551f76cf96a06ee83f450e",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_guard_single_tile_r23.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "84131f74567b2f546f9bff1e255a799cb8096ecf",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_guard_single_tile_r23_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "4493ffd5e5419fdb8e4aae343f1aadf1c3bb5a69",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_prefill.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "7549124e0d67efb2489137096a4c2bd81390a78f",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h64_prefill_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "b42a10b73cb29c7b625803c8cab0d94093715f06",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_h16_source_exact.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "7ff9a4ea269e50a9748dbecda38cf74d4af7a67b",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_h16_source_exact_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "9b148b796b98bda81220772117dc47a2c062bdcb",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_swa128_v42.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "7e3eae76e230d1d5bd9442e67706cc222a008707",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_swa128_v42_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "3f709ea3caff2eb08bc5378cae5680a2d4407b16",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_swa128_v43.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "286faca23947b7b159a37d5c1b8021a5aa953630",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_h8_swa128_v43_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "0bc6f59a2ad29a1db279f91f82174cac246d4fed",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_swa128_single_cta.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "b996ceddb082fa728ed7fb5f07bd12a46cf54e5d",
+      "path": "csrc/cake_dsv4/cake_dsv4_bf16_swa128_single_cta_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "4d6ed9a6772f0cab5c2693f8ec1da4727cc26a95",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h128.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "8ccca2c1f22fc0398f539f6e55847ca553cb85b6",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h128_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "3f2f689d481c7d4bc2ff758ea7a5cc5a74051ffd",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h128_prefill_source_persistent.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "3a7b2964844debf0996525f0f769ad1f33599a97",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h128_prefill_source_persistent_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "acea45cf241f143e644b068f0d9370a3e595ebd4",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h64_source_exact.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "b0b74a9e8e4363eadeb01d58ea86067c3c3d4eff",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_h64_source_exact_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "d9666b81ec8adef7189d985357ad08abf1582cea",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_h64.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "444e40d4db89195465181c8f4ddb8f32ed217931",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_h64_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "ce69d827b2866ffcb573fb049c4cb9dc80b7fb23",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_one_partition.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "aa3f365535b27b9e32624768bbd5436b79f319a9",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_one_partition_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "dc7b565f263a8ad1e3104ae9ecd4c3f4e77cf0bb",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_split.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "0360cfe9d782e5af6e8529008c757920b66b4abf",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_split_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "10ee6e7f749eeeb780810481a50fce079db401cf",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_swa.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "ce91eb5b4e861751caf6c889ede948b5b078f4c2",
+      "path": "csrc/cake_dsv4/cake_dsv4_fp8_lowhead_swa_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "76feedfa97f81b92297e72e53bfdb79fc8efc675",
+      "path": "csrc/cake_dsv4/cake_dsv4_split_reduce.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "af8d385f37933b460107492ef09e60a0daaf7d28",
+      "path": "csrc/cake_dsv4/cake_dsv4_split_reduce_binding.cu"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "20e8af0b5bf9c806dafeafa7aa378568db748628",
+      "path": "flashinfer/jit/cake_dsv4.py"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "1dc9900cc2c17cafb34e6be2112cf93cc1fb9566",
+      "path": "flashinfer/mla/_core.py"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "a3eee3e65e8919c1e59cf188bb68cea7dee43493",
+      "path": "flashinfer/mla/cake_dsv4.py"
+    },
+    {
+      "mode": "100644",
+      "git_blob": "07bf341bb2abe995b506d5193e6a1442bbf2ff30",
+      "path": "tests/mla/test_cake_dsv4.py"
+    }
+  ]
+}
